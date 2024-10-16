@@ -75,7 +75,7 @@ os.environ["LANGCHAIN_PROJECT"]
 #LLm Select
 
 llm = ChatGroq(
-            model="llama-3.1-70b-versatile",
+            model="llama-3.1-8b-instant",
             temperature=0,
         )
 
@@ -97,7 +97,7 @@ prompt_manger = ChatPromptTemplate.from_messages(
            " Below is detailed information about the company's operations, including the various tools incorporated and their specific use cases:\n"
             "\n {company_info}\n"
             "By following these guidelines and utilizing the provided tools effectively, you will assist the mechanic shop in maintaining efficient operations, accurate records, and high-quality customer service.\n"
-            "If the user greets, or thanks you, respond with a greeting or thank you message. If the user asks for help, provide guidance on how to proceed. If the user requests information, provide the relevant details.",
+            "If the user greets, or thanks you, respond with a greeting or thank you message. If the user asks for help, provide guidance on how to proceed. If the user requests information, provide the relevant details."
            " \nCurrent time: {time}.",
         ),  
         ("placeholder", "{messages}"),
@@ -600,7 +600,6 @@ company_tools_auth = [
     salida_orden_entrada_tool,
     update_producto_tool,
     delete_producto_tool,
-
     
 ]
 
@@ -751,4 +750,5 @@ def get_response (question,config):
 while(True):
     input_question = input()
     res = get_response(input_question,configuration)
+    print(res)
     

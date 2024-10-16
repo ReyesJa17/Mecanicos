@@ -409,9 +409,9 @@ def create_order_with_products(conn, id_encargado, fecha_entrada, status, id_cam
         camion = cursor.fetchone()
 
         if not camion:
-            print(f"Camion with VIN '{id_camion}' does not exist.")
+            print(f"El camion con el VIN '{id_camion}' no se ha registrado")
             # Prompt user to enter Camion details
-            print("Please enter the details for the new Camion:")
+            print("Por favor proporciona los datos requeridos para su creacion:")
             numero_unidad = input("Numero Unidad: ")
             kilometraje = input("Kilometraje: ")
             marca = input("Marca: ")
@@ -426,7 +426,7 @@ def create_order_with_products(conn, id_encargado, fecha_entrada, status, id_cam
 
             # Create the new Camion
             create_camion(conn, id_camion, numero_unidad, kilometraje, marca, modelo)
-            print(f"Camion with VIN '{id_camion}' has been created.")
+            print(f"Camion con VIN '{id_camion}' ha sido creado.")
 
         # Create the Orden_Entrada
         create_orden_entrada(conn, id_encargado, fecha_entrada, status, id_camion, motivo, kilometraje_entrada)
@@ -440,11 +440,11 @@ def create_order_with_products(conn, id_encargado, fecha_entrada, status, id_cam
             cursor.execute("SELECT MAX(ID) FROM Orden_Entrada")
             orden_id = cursor.fetchone()[0]
 
-        print("Please enter the IDs of the products to associate with this order.")
+        print("Por favor proporciona los ID de los productos usados en el servicio.")
         print("Enter 'finish' when you are done.")
 
         while True:
-            product_input = input("Enter Product ID (or 'finish' to complete): ")
+            product_input = input("Da el ID del producto (o 'finish' para terminar): ")
             if product_input.lower() == 'finish':
                 break
             try:
@@ -461,14 +461,14 @@ def create_order_with_products(conn, id_encargado, fecha_entrada, status, id_cam
                 product_category = product[2]
 
                 # Prompt for quantity
-                cantidad_input = input(f"Enter Quantity for '{product_name}' (Category: {product_category}): ")
+                cantidad_input = input(f"Selecciona la cantidad para '{product_name}' (Category: {product_category}): ")
                 try:
                     cantidad = int(cantidad_input)
                     if cantidad <= 0:
-                        print("Quantity must be a positive integer.")
+                        print("La cantidad debe de ser entero positivo.")
                         continue
                 except ValueError:
-                    print("Invalid quantity. Please enter a positive integer.")
+                    print("Cantidad Invalida.")
                     continue
 
                 # Associate the product with the order via its ID
@@ -478,7 +478,7 @@ def create_order_with_products(conn, id_encargado, fecha_entrada, status, id_cam
                 else:
                     print(result['message'])
             except ValueError:
-                print("Invalid Product ID. Please enter a valid integer.")
+                print("Product ID invalido. Please enter a valid integer.")
 
         return {"message": f"Order ID {orden_id} created successfully with associated products."}
 
