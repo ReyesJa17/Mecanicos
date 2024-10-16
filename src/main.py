@@ -588,6 +588,7 @@ company_tools_safe = [
     read_orden_entrada_tool,
     read_producto_tool,
     read_productos_servicio_tool,
+    create_order_with_products_tool,
 ]
 
 company_tools_auth = [
@@ -599,7 +600,7 @@ company_tools_auth = [
     salida_orden_entrada_tool,
     update_producto_tool,
     delete_producto_tool,
-    create_order_with_products_tool,
+
     
 ]
 
