@@ -49,21 +49,23 @@ from typing import Literal
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import StateGraph
 from langgraph.prebuilt import tools_condition
-from langchain_core.pydantic_v1 import BaseModel, Field
+from pydantic import BaseModel
 from langgraph.graph import END, StateGraph, START
 import sys
 from utilsdb import initialize_database
 #logging.basicConfig(level=logging.DEBUG)
 from typing import Callable
-os.environ['GROQ_API_KEY'] 
+from dotenv import load_dotenv
+import os
 
-def _set_env(var: str):
-    if not os.environ.get(var):
-        os.environ[var] = getpass.getpass(f"{var}: ")
+load_dotenv()  # Carga todas las variables del archivo .env al entorno
 
-os.environ['LANGCHAIN_API_KEY'] 
-os.environ["LANGCHAIN_TRACING_V2"] 
-os.environ["LANGCHAIN_PROJECT"] 
+# Ahora puedes acceder a las variables con os.environ
+os.environ['GROQ_API_KEY']
+os.environ['LANGCHAIN_API_KEY']
+os.environ['LANGCHAIN_TRACING_V2']
+os.environ['LANGCHAIN_PROJECT']
+
 
 
 
