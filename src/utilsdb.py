@@ -409,9 +409,9 @@ def create_order_with_products(conn, id_encargado, fecha_entrada, status, id_cam
         camion = cursor.fetchone()
 
         if not camion:
-            print(f"Camion with VIN '{id_camion}' does not exist.")
+            print(f"El camion con el VIN '{id_camion}' no se ha registrado")
             # Prompt user to enter Camion details
-            print("Please enter the details for the new Camion:")
+            print("Por favor proporciona los datos requeridos para su creacion:")
             numero_unidad = input("Numero Unidad: ")
             kilometraje = input("Kilometraje: ")
             marca = input("Marca: ")
@@ -426,7 +426,7 @@ def create_order_with_products(conn, id_encargado, fecha_entrada, status, id_cam
 
             # Create the new Camion
             create_camion(conn, id_camion, numero_unidad, kilometraje, marca, modelo)
-            print(f"Camion with VIN '{id_camion}' has been created.")
+            print(f"Camion con VIN '{id_camion}' ha sido creado.")
 
         # Create the Orden_Entrada
         create_orden_entrada(conn, id_encargado, fecha_entrada, status, id_camion, motivo, kilometraje_entrada)
@@ -440,11 +440,11 @@ def create_order_with_products(conn, id_encargado, fecha_entrada, status, id_cam
             cursor.execute("SELECT MAX(ID) FROM Orden_Entrada")
             orden_id = cursor.fetchone()[0]
 
-        print("Please enter the IDs of the products to associate with this order.")
+        print("Por favor proporciona los ID de los productos usados en el servicio.")
         print("Enter 'finish' when you are done.")
 
         while True:
-            product_input = input("Enter Product ID (or 'finish' to complete): ")
+            product_input = input("Da el ID del producto (o 'finish' para terminar): ")
             if product_input.lower() == 'finish':
                 break
             try:
@@ -461,14 +461,14 @@ def create_order_with_products(conn, id_encargado, fecha_entrada, status, id_cam
                 product_category = product[2]
 
                 # Prompt for quantity
-                cantidad_input = input(f"Enter Quantity for '{product_name}' (Category: {product_category}): ")
+                cantidad_input = input(f"Selecciona la cantidad para '{product_name}' (Category: {product_category}): ")
                 try:
                     cantidad = int(cantidad_input)
                     if cantidad <= 0:
-                        print("Quantity must be a positive integer.")
+                        print("La cantidad debe de ser entero positivo.")
                         continue
                 except ValueError:
-                    print("Invalid quantity. Please enter a positive integer.")
+                    print("Cantidad Invalida.")
                     continue
 
                 # Associate the product with the order via its ID
@@ -478,7 +478,7 @@ def create_order_with_products(conn, id_encargado, fecha_entrada, status, id_cam
                 else:
                     print(result['message'])
             except ValueError:
-                print("Invalid Product ID. Please enter a valid integer.")
+                print("Product ID invalido. Please enter a valid integer.")
 
         return {"message": f"Order ID {orden_id} created successfully with associated products."}
 
@@ -529,6 +529,128 @@ def get_products_used_in_order(conn, id_orden):
     return cursor.fetchall()
 
 
+def get_products_used_in_month(conn, year: int, month: int):
+    """
+    Retrieves all products used and their quantities in all orders for a specified month.
+
+    Args:
+        conn: Database connection.
+        year (int): The year of interest.
+        month (int): The month of interest (1-12).
+
+    Returns:
+        List of tuples containing product name, category, and total quantity used in the specified month.
+    """
+    cursor = conn.cursor()
+    query = """
+    SELECT p.Nombre, p.Categoria, SUM(ps.Cantidad) as TotalCantidad
+    FROM Productos_Servicio ps
+    JOIN Productos p ON ps.ID_Producto = p.ID
+    JOIN Orden_Entrada oe ON ps.ID_Orden = oe.ID
+    WHERE strftime('%Y', oe.Fecha_Entrada) = ? AND strftime('%m', oe.Fecha_Entrada) = ?
+    GROUP BY p.ID
+    ORDER BY TotalCantidad DESC
+    """
+    cursor.execute(query, (str(year), f"{month:02d}"))
+    return cursor.fetchall()
+
+
+def get_product_usage_for_truck(conn, vin: str, product_id: int, start_date: str, end_date: str):
+    """
+    Retrieves the total quantity of a specific product used for a specific truck within a time range.
+
+    Args:
+        conn: Database connection.
+        vin (str): The VIN of the truck.
+        product_id (int): The ID of the product.
+        start_date (str): The start date in 'YYYY-MM-DD' format.
+        end_date (str): The end date in 'YYYY-MM-DD' format.
+
+    Returns:
+        Total quantity of the product used for the truck in the specified time range.
+    """
+    cursor = conn.cursor()
+    query = """
+    SELECT SUM(ps.Cantidad) as TotalCantidad
+    FROM Productos_Servicio ps
+    JOIN Orden_Entrada oe ON ps.ID_Orden = oe.ID
+    WHERE oe.ID_Camion = ? AND ps.ID_Producto = ?
+      AND oe.Fecha_Entrada BETWEEN ? AND ?
+    """
+    cursor.execute(query, (vin, product_id, start_date, end_date))
+    result = cursor.fetchone()
+    return result[0] if result[0] is not None else 0
+
+
+def get_products_used_for_truck(conn, vin: str):
+    """
+    Retrieves all products used and their quantities for a specific truck across all orders.
+
+    Args:
+        conn: Database connection.
+        vin (str): The VIN of the truck.
+
+    Returns:
+        List of tuples containing product name, category, and total quantity used for the truck.
+    """
+    cursor = conn.cursor()
+    query = """
+    SELECT p.Nombre, p.Categoria, SUM(ps.Cantidad) as TotalCantidad
+    FROM Productos_Servicio ps
+    JOIN Productos p ON ps.ID_Producto = p.ID
+    JOIN Orden_Entrada oe ON ps.ID_Orden = oe.ID
+    WHERE oe.ID_Camion = ?
+    GROUP BY p.ID
+    ORDER BY TotalCantidad DESC
+    """
+    cursor.execute(query, (vin,))
+    return cursor.fetchall()
+
+def get_order_count_for_branch(conn, sucursal: str):
+    """
+    Retrieves the number of orders for a specific branch.
+
+    Args:
+        conn: Database connection.
+        sucursal (str): The name or identifier of the branch.
+
+    Returns:
+        Integer representing the number of orders for the branch.
+    """
+    cursor = conn.cursor()
+    query = """
+    SELECT COUNT(*) as OrderCount
+    FROM Orden_Entrada
+    WHERE Sucursal = ?
+    """
+    cursor.execute(query, (sucursal,))
+    result = cursor.fetchone()
+    return result[0]
+
+
+def get_order_details_for_truck(conn, vin: str):
+    """
+    Retrieves the number of orders, motives, and dates for a specific truck.
+
+    Args:
+        conn: Database connection.
+        vin (str): The VIN of the truck.
+
+    Returns:
+        A list of dictionaries containing order ID, motive, and date.
+    """
+    cursor = conn.cursor()
+    query = """
+    SELECT ID, Motivo, Fecha_Entrada
+    FROM Orden_Entrada
+    WHERE ID_Camion = ?
+    ORDER BY Fecha_Entrada DESC
+    """
+    cursor.execute(query, (vin,))
+    orders = cursor.fetchall()
+    return [{"OrderID": order[0], "Motivo": order[1], "Fecha_Entrada": order[2]} for order in orders]
+
+
 
 #Informnation
 
@@ -543,6 +665,7 @@ Create Camion Tool:
 
 Requirements: VIN (Vehicle Identification Number), unit number, entry mileage, brand, and model.
 Use Case: Used when a truck that is not yet in the system arrives at the shop. The manager inputs all necessary details about the truck to add it to the database, ensuring accurate maintenance records and future service planning.
+
 Read Camion Tool:
 
 Requirements: Truck's VIN.
@@ -551,46 +674,83 @@ Update Camion Tool:
 
 Requirements: Truck's VIN and any details to be updated (unit number, mileage, brand, model).
 Use Case: Used to update the truck's information in the database when changes occur, such as after servicing or correcting initial entry errors.
+
 Delete Camion Tool:
 
 Requirements: Truck's VIN.
 Use Case: Removes a truck from the system, for example, if it is no longer in service or was entered incorrectly.
+
 Create Order with Products Tool:
 
 Requirements: Manager's ID, entry date, status, truck's VIN, maintenance reason, entry mileage.
 Use Case: Used by the manager to create an entrance order when a truck arrives for service. This tool captures all essential order details and interactively queries the user to associate products and consumables used during the service.
+
 Read Orden Entrada Tool:
 
 Requirements: Order ID.
 Use Case: Allows staff to view and verify the details of entrance orders, including associated products and services.
+
 Update Orden Entrada Tool:
 
 Requirements: Order ID and any details to be updated (status, additional services, etc.).
 Use Case: Used to update the entrance order with new information, such as status changes or additional required maintenance.
+
 Delete Orden Entrada Tool:
 
 Requirements: Order ID.
 Use Case: Removes an entrance order from the system, for instance, if it was created in error.
+
 Salida Orden Entrada Tool:
 
 Requirements: Order ID, exit date, status (should be updated to "liberated").
 Use Case: Used by the manager to finalize an entrance order when service is completed. It records the exit date and changes the status to "liberated," indicating that the truck is ready for pickup.
+
 Read Producto Tool:
 
 Requirements: Product ID.
 Use Case: Retrieves information about a specific product or consumable used in services.
+
 Update Producto Tool:
 
 Requirements: Product ID and any details to be updated (name, category).
 Use Case: Used to update product information in the database, such as correcting details or updating categories.
+
 Delete Producto Tool:
 
 Requirements: Product ID.
 Use Case: Removes a product from the system, for example, if it has been discontinued.
+
 Read Productos Servicio Tool:
 
 Requirements: Order ID.
 Use Case: Provides a detailed list of all products and consumables associated with a specific entrance order, aiding in inventory tracking and billing.
+
+
+Get Products Used in Month Tool:
+
+Requirements: Year, month.
+Use case: Retrieves all products used and their quantities in all orders during a specific month. This helps monitor product usage trends and plan inventory replenishment.
+
+Get Product Usage for Truck Tool:
+
+Requirements: Truck VIN, product ID, start date, end date.
+Use case: Retrieves the total quantity of a specific product used for a particular truck within a time range. Useful for detecting anomalies in product usage, which may indicate misuse or theft.
+
+Get Products Used for Truck Tool:
+
+Requirements: Truck VIN.
+Use case: Retrieves all products used and their quantities for a specific truck in all orders. Helps review the maintenance history and verify product usage for that truck.
+
+Get Order Count for Branch Tool:
+
+Requirements: Branch name or identifier.
+Use case: Retrieves the number of orders processed by a specific branch. This helps assess branch performance and manage workload distribution.
+
+Get Order Details for Truck Tool:
+
+Requirements: Truck VIN.
+Use case: Retrieves the number of orders, reasons, and dates for a specific truck. Provides a complete view of the truck's service history, assisting in maintenance planning and communication with the customer.
+
 Operation Details:
 
 Entrance Order Creation:

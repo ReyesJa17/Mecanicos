@@ -40,6 +40,11 @@ from utilsdb import (
     read_productos_servicio,
     create_order_with_products,
     mechanics_operation,
+    get_products_used_in_month,
+    get_product_usage_for_truck,
+    get_products_used_for_truck,
+    get_order_count_for_branch,
+    get_order_details_for_truck,
 )
 
 from langchain_core.runnables import ensure_config
@@ -77,7 +82,7 @@ os.environ['LANGCHAIN_PROJECT']
 #LLm Select
 
 llm = ChatGroq(
-            model="llama-3.1-70b-versatile",
+            model="llama-3.1-8b-instant",
             temperature=0,
         )
 
@@ -99,7 +104,7 @@ prompt_manger = ChatPromptTemplate.from_messages(
            " Below is detailed information about the company's operations, including the various tools incorporated and their specific use cases:\n"
             "\n {company_info}\n"
             "By following these guidelines and utilizing the provided tools effectively, you will assist the mechanic shop in maintaining efficient operations, accurate records, and high-quality customer service.\n"
-            "If the user greets, or thanks you, respond with a greeting or thank you message. If the user asks for help, provide guidance on how to proceed. If the user requests information, provide the relevant details.",
+            "If the user greets, or thanks you, respond with a greeting or thank you message. If the user asks for help, provide guidance on how to proceed. If the user requests information, provide the relevant details."
            " \nCurrent time: {time}.",
         ),  
         ("placeholder", "{messages}"),
@@ -542,6 +547,158 @@ def create_order_with_products_tool(
     except Exception as e:
         logging.error(f"Error creating order with products: {e}")
         return {"error": str(e)}
+    
+
+#Info Rettrieval
+
+@tool
+def get_products_used_in_month_tool(year: int, month: int) -> List[Dict[str, Any]]:
+    """
+    Retrieves all products used and their quantities in all orders for a specified month.
+
+    Args:
+        year (int): The year of interest (e.g., 2023).
+        month (int): The month of interest (1-12).
+
+    Returns:
+        List[Dict[str, Any]]: A list of dictionaries containing product name, category, and total quantity used.
+
+    Usage:
+        products = get_products_used_in_month_tool(2023, 10)
+    """
+    try:
+        conn = sqlite3.connect('mecanicos.db')
+        results = get_products_used_in_month(conn, year, month)
+        conn.close()
+
+        products_list = []
+        for product in results:
+            products_list.append({
+                "Nombre": product[0],
+                "Categoria": product[1],
+                "TotalCantidad": product[2]
+            })
+        return products_list
+    except Exception as e:
+        logging.error(f"Error in get_products_used_in_month_tool: {e}")
+        return {"error": str(e)}
+
+
+@tool
+def get_product_total_usage_for_truck_tool(
+    vin: str,
+    product_id: int,
+    start_date: str,
+    end_date: str
+) -> Dict[str, Any]:
+    """
+    Retrieves the total quantity of a specific product used for a specific truck within a time range.
+
+    Args:
+        vin (str): The VIN of the truck.
+        product_id (int): The ID of the product.
+        start_date (str): The start date in 'YYYY-MM-DD' format.
+        end_date (str): The end date in 'YYYY-MM-DD' format.
+
+    Returns:
+        Dict[str, Any]: A dictionary containing the total quantity used.
+
+    Usage:
+        total_usage = get_product_usage_for_truck_tool('1HGCM82633A004352', 1, '2023-01-01', '2023-12-31')
+    """
+    try:
+        conn = sqlite3.connect('mecanicos.db')
+        total_quantity = get_product_usage_for_truck(conn, vin, product_id, start_date, end_date)
+        conn.close()
+
+        return {"TotalCantidad": total_quantity}
+    except Exception as e:
+        logging.error(f"Error in get_product_usage_for_truck_tool: {e}")
+        return {"error": str(e)}
+
+
+@tool
+def get_products_used_for_truck_tool(vin: str) -> List[Dict[str, Any]]:
+    """
+    Retrieves all products used and their quantities for a specific truck across all orders.
+
+    Args:
+        vin (str): The VIN of the truck.
+
+    Returns:
+        List[Dict[str, Any]]: A list of dictionaries containing product name, category, and total quantity used.
+
+    Usage:
+        products = get_products_used_for_truck_tool('1HGCM82633A004352')
+    """
+    try:
+        conn = sqlite3.connect('mecanicos.db')
+        results = get_products_used_for_truck(conn, vin)
+        conn.close()
+
+        products_list = []
+        for product in results:
+            products_list.append({
+                "Nombre": product[0],
+                "Categoria": product[1],
+                "TotalCantidad": product[2]
+            })
+        return products_list
+    except Exception as e:
+        logging.error(f"Error in get_products_used_for_truck_tool: {e}")
+        return {"error": str(e)}
+
+
+@tool
+def get_order_count_for_branch_tool(branch_name: str) -> Dict[str, Any]:
+    """
+    Retrieves the number of orders for a specific branch.
+
+    Args:
+        branch_name (str): The name or identifier of the branch.
+
+    Returns:
+        Dict[str, Any]: A dictionary containing the total number of orders.
+
+    Usage:
+        order_count = get_order_count_for_branch_tool('Branch_A')
+    """
+    try:
+        conn = sqlite3.connect('mecanicos.db')
+        count = get_order_count_for_branch(conn, branch_name)
+        conn.close()
+
+        return {"TotalOrders": count}
+    except Exception as e:
+        logging.error(f"Error in get_order_count_for_branch_tool: {e}")
+        return {"error": str(e)}
+
+
+@tool
+def get_order_details_for_truck_tool(vin: str) -> List[Dict[str, Any]]:
+    """
+    Retrieves the number of orders, motives, and dates for a specific truck.
+
+    Args:
+        vin (str): The VIN of the truck.
+
+    Returns:
+        List[Dict[str, Any]]: A list of dictionaries containing order ID, motive, and date.
+
+    Usage:
+        orders = get_order_details_for_truck_tool('1HGCM82633A004352')
+    """
+    try:
+        conn = sqlite3.connect('mecanicos.db')
+        order_details = get_order_details_for_truck(conn, vin)
+        conn.close()
+
+        return order_details
+    except Exception as e:
+        logging.error(f"Error in get_order_details_for_truck_tool: {e}")
+        return {"error": str(e)}
+
+
 
 #Utility functions
 def get_company_info(state) -> str:
@@ -591,6 +748,11 @@ company_tools_safe = [
     read_producto_tool,
     read_productos_servicio_tool,
     create_order_with_products_tool,
+    get_products_used_in_month_tool,
+    get_product_total_usage_for_truck_tool,
+    get_products_used_for_truck_tool,
+    get_order_count_for_branch_tool,
+    get_order_details_for_truck_tool,
 ]
 
 company_tools_auth = [
@@ -602,7 +764,6 @@ company_tools_auth = [
     salida_orden_entrada_tool,
     update_producto_tool,
     delete_producto_tool,
-
     
 ]
 
@@ -753,4 +914,5 @@ def get_response (question,config):
 while(True):
     input_question = input()
     res = get_response(input_question,configuration)
+    print(res)
     
