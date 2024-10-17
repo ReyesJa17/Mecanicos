@@ -1,16 +1,13 @@
 import sqlite3
 import os
-
-
-
-import sqlite3
+import pandas as pd
 
 
 # Path to the SQLite database file
 db_path = 'mecanicos.db'
 
-#Initialize database
 
+#Initialize database
 def initialize_database(db_path: str):
     """
     Initializes the SQLite database with the provided schema.
@@ -45,18 +42,20 @@ def initialize_database(db_path: str):
                 ID INTEGER PRIMARY KEY AUTOINCREMENT,
                 ID_Encargado TEXT NOT NULL,
                 Fecha_Entrada DATE NOT NULL,
-                Status TEXT NOT NULL CHECK(Status IN ('liberated', 'in process', 'inactive')),
+                Status TEXT NOT NULL CHECK(Status IN ('liberada', 'proceso', 'inactiva')),
                 Fecha_Salida DATE,
                 ID_Camion TEXT,
-                Motivo TEXT,
-                Kilometraje_Entrada REAL NOT NULL
+                Motivo_Entrada TEXT,
+                Motivo_Salida TEXT,
+                Tipo TEXT CHECK(Tipo IN ('CONSUMIBLE', 'PREVENTIVO', 'CORRECTIVO')),
+                Kilometraje_Entrada INTEGER NOT NULL
             );
 
             -- Table: Camion
             CREATE TABLE IF NOT EXISTS Camion (
                 VIN TEXT PRIMARY KEY,
                 NumeroUnidad INTEGER NOT NULL,
-                Kilometraje REAL NOT NULL,
+                Kilometraje INTEGER NOT NULL,
                 Marca TEXT NOT NULL,
                 Modelo TEXT NOT NULL
             );
@@ -223,53 +222,70 @@ def update_productos_servicio(conn, id_orden, id_producto, new_id_orden=None, ne
 
 
 #Orden_Entrada
-
-def create_orden_entrada(conn, id_encargado, fecha_entrada, status, id_camion, motivo, kilometraje_entrada):
-    cursor = conn.cursor()
-    query = """
-    INSERT INTO Orden_Entrada (
-        ID_Encargado, Fecha_Entrada, Status,
-        Fecha_Salida, ID_Camion, Motivo, Kilometraje_Entrada
-    ) VALUES (?, ?, ?, NULL, ?, ?, ?)
+def create_orden_entrada(conn, id_encargado: str, fecha_entrada: str, status: str, id_camion: str, motivo_entrada: str, tipo: str, kilometraje_entrada: int):
     """
-    cursor.execute(query, (
-        id_encargado, fecha_entrada, status,
-        id_camion, motivo, kilometraje_entrada
-    ))
-    conn.commit()
-
-
-def salida_orden_entrada(conn, orden_id, fecha_salida, status):
-    """
-    Updates the 'fecha_salida' and 'status' of an existing Orden_Entrada.
+    Crea una nueva Orden_Entrada en la base de datos.
 
     Args:
-        conn: Database connection.
-        orden_id (int): ID of the order to update.
-        fecha_salida (str): Exit date in 'YYYY-MM-DD' format.
-        status (str): New status of the order ('liberated', 'in process', 'inactive').
+        conn: Conexión a la base de datos.
+        id_encargado (str): Identificador del encargado.
+        fecha_entrada (str): Fecha de entrada en formato 'YYYY-MM-DD'.
+        status (str): Estado inicial de la orden.
+        id_camion (str): VIN del camión.
+        motivo_entrada (str): Motivo de entrada.
+        tipo (str): Tipo de mantenimiento ('CONSUMIBLE', 'PREVENTIVO', 'CORRECTIVO').
+        kilometraje_entrada (int): Kilometraje al entrar.
 
     Returns:
-        dict: A message indicating success or an error.
+        dict: Mensaje de éxito o de error.
     """
     cursor = conn.cursor()
     try:
-        # Validate status
-        if status not in ('liberated', 'in process', 'inactive'):
-            return {"error": "Invalid status value."}
+        query = """
+        INSERT INTO Orden_Entrada (ID_Encargado, Fecha_Entrada, Status, ID_Camion, Motivo_Entrada, Tipo, Kilometraje_Entrada)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """
+        cursor.execute(query, (id_encargado, fecha_entrada, status, id_camion, motivo_entrada, tipo, kilometraje_entrada))
+        conn.commit()
+        return {"message": "Orden de entrada creada exitosamente."}
+    except sqlite3.Error as e:
+        return {"error": f"Ocurrió un error al crear la orden de entrada: {e}"}
 
-        # Update the record
+
+def salida_orden_entrada(conn, orden_id: int, fecha_salida: str, status: str, motivo_salida: str):
+    """
+    Actualiza la 'fecha_salida', 'status' y 'motivo_salida' de una Orden_Entrada existente.
+
+    Args:
+        conn: Conexión a la base de datos.
+        orden_id (int): ID de la orden a actualizar.
+        fecha_salida (str): Fecha de salida en formato 'YYYY-MM-DD'.
+        status (str): Nuevo estado de la orden (debe ser 'liberada' o similar).
+        motivo_salida (str): Motivo de salida.
+
+    Returns:
+        dict: Mensaje de éxito o de error.
+    """
+    cursor = conn.cursor()
+    try:
+        # Verificar si la orden existe
+        cursor.execute("SELECT * FROM Orden_Entrada WHERE ID = ?", (orden_id,))
+        orden = cursor.fetchone()
+        if not orden:
+            return {"error": f"No se encontró una orden con ID {orden_id}."}
+
+        # Actualizar la orden con los nuevos datos
         query = """
         UPDATE Orden_Entrada
-        SET Fecha_Salida = ?, Status = ?
+        SET Fecha_Salida = ?, Status = ?, Motivo_Salida = ?
         WHERE ID = ?
         """
-        cursor.execute(query, (fecha_salida, status, orden_id))
+        cursor.execute(query, (fecha_salida, status, motivo_salida, orden_id))
         conn.commit()
-
-        return {"message": "Orden_Entrada updated successfully."}
+        return {"message": f"La orden con ID {orden_id} ha sido actualizada con fecha de salida y motivo de salida."}
     except sqlite3.Error as e:
-        return {"error": f"An error occurred: {e}"}
+        return {"error": f"Ocurrió un error al actualizar la orden: {e}"}
+
 
 
 def read_orden_entrada(conn, orden_id):
@@ -277,8 +293,7 @@ def read_orden_entrada(conn, orden_id):
     query = "SELECT * FROM Orden_Entrada WHERE ID = ?"
     cursor.execute(query, (orden_id,))
     return cursor.fetchone()
-
-def update_orden_entrada(conn, orden_id, id_encargado=None, fecha_entrada=None, status=None, fecha_salida=None, id_camion=None, motivo=None, kilometraje_entrada=None):
+def update_orden_entrada(conn, orden_id, id_encargado=None, fecha_entrada=None, status=None, fecha_salida=None, id_camion=None, motivo_entrada=None, motivo_salida=None, tipo=None, kilometraje_entrada=None):
     cursor = conn.cursor()
 
     # Update only the fields that are provided
@@ -300,9 +315,15 @@ def update_orden_entrada(conn, orden_id, id_encargado=None, fecha_entrada=None, 
     if id_camion is not None:
         fields.append("ID_Camion = ?")
         values.append(id_camion)
-    if motivo is not None:
-        fields.append("Motivo = ?")
-        values.append(motivo)
+    if motivo_entrada is not None:
+        fields.append("Motivo_Entrada = ?")
+        values.append(motivo_entrada)
+    if motivo_salida is not None:
+        fields.append("Motivo_Salida = ?")
+        values.append(motivo_salida)
+    if tipo is not None:
+        fields.append("Tipo = ?")
+        values.append(tipo)
     if kilometraje_entrada is not None:
         fields.append("Kilometraje_Entrada = ?")
         values.append(kilometraje_entrada)
@@ -316,6 +337,7 @@ def update_orden_entrada(conn, orden_id, id_encargado=None, fecha_entrada=None, 
     conn.commit()
 
     return {"message": "Orden_Entrada updated successfully."}
+
 
 def delete_orden_entrada(conn, orden_id):
     cursor = conn.cursor()
@@ -384,8 +406,7 @@ def delete_producto(conn, producto_id):
 
 
 #ORDEN ENTRADA WITH PRODUCTS AND CAMION
-
-def create_order_with_products(conn, id_encargado, fecha_entrada, status, id_camion, motivo, kilometraje_entrada):
+def create_order_with_products(conn, id_encargado, fecha_entrada, status, id_camion, motivo_entrada, tipo, kilometraje_entrada):
     """
     Creates a new Orden_Entrada, adds a Camion if it doesn't exist, and associates products with the order.
 
@@ -393,10 +414,11 @@ def create_order_with_products(conn, id_encargado, fecha_entrada, status, id_cam
         conn: Database connection.
         id_encargado (str): Identifier of the encargado (manager).
         fecha_entrada (str): Entry date in 'YYYY-MM-DD' format.
-        status (str): Status of the order ('liberated', 'in process', 'inactive').
+        status (str): Status of the order ('liberada', 'proceso', 'inactiva').
         id_camion (str): VIN of the truck.
-        motivo (str): Reason for maintenance.
-        kilometraje_entrada (float): Mileage upon entry.
+        motivo_entrada (str): Motivo de entrada.
+        tipo (str): Tipo de mantenimiento ('CONSUMIBLE', 'PREVENTIVO', 'CORRECTIVO').
+        kilometraje_entrada (int): Mileage upon entry.
 
     Returns:
         dict: A message indicating success or an error.
@@ -409,10 +431,10 @@ def create_order_with_products(conn, id_encargado, fecha_entrada, status, id_cam
         camion = cursor.fetchone()
 
         if not camion:
-            print(f"El camion con el VIN '{id_camion}' no se ha registrado")
+            print(f"El camión con el VIN '{id_camion}' no se ha registrado")
             # Prompt user to enter Camion details
-            print("Por favor proporciona los datos requeridos para su creacion:")
-            numero_unidad = input("Numero Unidad: ")
+            print("Por favor proporciona los datos requeridos para su creación:")
+            numero_unidad = input("Número de Unidad: ")
             kilometraje = input("Kilometraje: ")
             marca = input("Marca: ")
             modelo = input("Modelo: ")
@@ -422,15 +444,15 @@ def create_order_with_products(conn, id_encargado, fecha_entrada, status, id_cam
                 numero_unidad = int(numero_unidad)
                 kilometraje = float(kilometraje)
             except ValueError:
-                return {"error": "Invalid input for Numero Unidad or Kilometraje."}
+                return {"error": "Entrada inválida para Número de Unidad o Kilometraje."}
 
             # Create the new Camion
             create_camion(conn, id_camion, numero_unidad, kilometraje, marca, modelo)
-            print(f"Camion con VIN '{id_camion}' ha sido creado.")
+            print(f"Camión con VIN '{id_camion}' ha sido creado.")
 
         # Create the Orden_Entrada
-        create_orden_entrada(conn, id_encargado, fecha_entrada, status, id_camion, motivo, kilometraje_entrada)
-        print("Orden_Entrada has been created.")
+        create_orden_entrada(conn, id_encargado, fecha_entrada, status, id_camion, motivo_entrada, tipo, kilometraje_entrada)
+        print("Orden de entrada ha sido creada.")
 
         # Retrieve the ID of the newly created order
         orden_id = cursor.lastrowid
@@ -441,10 +463,10 @@ def create_order_with_products(conn, id_encargado, fecha_entrada, status, id_cam
             orden_id = cursor.fetchone()[0]
 
         print("Por favor proporciona los ID de los productos usados en el servicio.")
-        print("Enter 'finish' when you are done.")
+        print("Ingresa 'finish' cuando hayas terminado.")
 
         while True:
-            product_input = input("Da el ID del producto (o 'finish' para terminar): ")
+            product_input = input("Ingresa el ID del producto (o 'finish' para terminar): ")
             if product_input.lower() == 'finish':
                 break
             try:
@@ -454,21 +476,21 @@ def create_order_with_products(conn, id_encargado, fecha_entrada, status, id_cam
                 cursor.execute("SELECT ID, Nombre, Categoria FROM Productos WHERE ID = ?", (id_producto,))
                 product = cursor.fetchone()
                 if not product:
-                    print(f"Product with ID {id_producto} does not exist. Please enter a valid Product ID.")
+                    print(f"El producto con ID {id_producto} no existe. Por favor, ingresa un ID de producto válido.")
                     continue
 
                 product_name = product[1]
                 product_category = product[2]
 
                 # Prompt for quantity
-                cantidad_input = input(f"Selecciona la cantidad para '{product_name}' (Category: {product_category}): ")
+                cantidad_input = input(f"Selecciona la cantidad para '{product_name}' (Categoría: {product_category}): ")
                 try:
                     cantidad = int(cantidad_input)
                     if cantidad <= 0:
-                        print("La cantidad debe de ser entero positivo.")
+                        print("La cantidad debe ser un entero positivo.")
                         continue
                 except ValueError:
-                    print("Cantidad Invalida.")
+                    print("Cantidad inválida.")
                     continue
 
                 # Associate the product with the order via its ID
@@ -478,19 +500,20 @@ def create_order_with_products(conn, id_encargado, fecha_entrada, status, id_cam
                 else:
                     print(result['message'])
             except ValueError:
-                print("Product ID invalido. Please enter a valid integer.")
+                print("ID de producto inválido. Por favor, ingresa un entero válido.")
 
-        return {"message": f"Order ID {orden_id} created successfully with associated products."}
+        return {"message": f"La orden con ID {orden_id} ha sido creada exitosamente con los productos asociados."}
 
     except sqlite3.Error as e:
-        return {"error": f"An error occurred: {e}"}
+        return {"error": f"Ocurrió un error: {e}"}
+
     
 
 #Create Products
 
 def add_categories_and_products(conn, categories_and_products):
     """
-    Adds categories and their associated products to the Productos table.
+    Adds categories and their associated products to the Productos table with predefined IDs.
 
     Args:
         conn: Database connection.
@@ -498,26 +521,37 @@ def add_categories_and_products(conn, categories_and_products):
     """
     cursor = conn.cursor()
     try:
+        product_id = 1  # Start ID from 1
         for category_data in categories_and_products:
             category = category_data['category']
             products = category_data['products']
             for product_name in products:
                 # Clean up product name (strip whitespace)
                 product_name = product_name.strip()
-                # Insert product into Productos table
-                query = "INSERT INTO Productos (Nombre, Categoria) VALUES (?, ?)"
-                cursor.execute(query, (product_name, category))
+                # Insert product into Productos table with predefined ID
+                query = "INSERT INTO Productos (ID, Nombre, Categoria) VALUES (?, ?, ?)"
+                cursor.execute(query, (product_id, product_name, category))
+                product_id += 1  # Increment ID for next product
         conn.commit()
-        print("Categories and products added successfully.")
+        print("Categories and products added successfully with predefined IDs.")
     except sqlite3.Error as e:
         print(f"An error occurred while adding categories and products: {e}")
-
 
 
 
 #Information queries
 
 def get_products_used_in_order(conn, id_orden):
+    """
+    Recupera y devuelve una lista de productos utilizados en una orden específica en formato de texto legible.
+
+    Args:
+        conn: Conexión a la base de datos.
+        id_orden (int): ID de la orden.
+
+    Returns:
+        str: Una cadena de texto con los productos utilizados o un mensaje indicando que no se encontraron productos.
+    """
     cursor = conn.cursor()
     query = """
     SELECT p.Nombre, p.Categoria, ps.Cantidad
@@ -526,20 +560,29 @@ def get_products_used_in_order(conn, id_orden):
     WHERE ps.ID_Orden = ?
     """
     cursor.execute(query, (id_orden,))
-    return cursor.fetchall()
+    results = cursor.fetchall()
+    
+    if not results:
+        return f"No se encontraron productos para la orden con ID {id_orden}."
+    
+    response = f"Productos utilizados en la orden {id_orden}:\n"
+    for nombre, categoria, cantidad in results:
+        response += f"- {nombre} (Categoría: {categoria}), Cantidad: {cantidad}\n"
+    return response
+
 
 
 def get_products_used_in_month(conn, year: int, month: int):
     """
-    Retrieves all products used and their quantities in all orders for a specified month.
+    Recupera todos los productos utilizados y sus cantidades en todas las órdenes durante un mes específico, y los devuelve en un formato de texto legible.
 
     Args:
-        conn: Database connection.
-        year (int): The year of interest.
-        month (int): The month of interest (1-12).
+        conn: Conexión a la base de datos.
+        year (int): Año de interés.
+        month (int): Mes de interés (1-12).
 
     Returns:
-        List of tuples containing product name, category, and total quantity used in the specified month.
+        str: Una cadena de texto con los productos utilizados o un mensaje indicando que no se encontraron productos.
     """
     cursor = conn.cursor()
     query = """
@@ -552,46 +595,99 @@ def get_products_used_in_month(conn, year: int, month: int):
     ORDER BY TotalCantidad DESC
     """
     cursor.execute(query, (str(year), f"{month:02d}"))
-    return cursor.fetchall()
+    results = cursor.fetchall()
+    
+    if not results:
+        return f"No se encontraron productos utilizados en {month}/{year}."
+    
+    response = f"Productos utilizados en {month}/{year}:\n"
+    for nombre, categoria, total_cantidad in results:
+        response += f"- {nombre} (Categoría: {categoria}), Cantidad total: {total_cantidad}\n"
+    return response
+
+
+def get_products_used_in_month(conn, year: int, month: int):
+    """
+    Recupera todos los productos utilizados y sus cantidades en todas las órdenes durante un mes específico, y los devuelve en un formato de texto legible.
+
+    Args:
+        conn: Conexión a la base de datos.
+        year (int): Año de interés.
+        month (int): Mes de interés (1-12).
+
+    Returns:
+        str: Una cadena de texto con los productos utilizados o un mensaje indicando que no se encontraron productos.
+    """
+    cursor = conn.cursor()
+    query = """
+    SELECT p.Nombre, p.Categoria, SUM(ps.Cantidad) as TotalCantidad
+    FROM Productos_Servicio ps
+    JOIN Productos p ON ps.ID_Producto = p.ID
+    JOIN Orden_Entrada oe ON ps.ID_Orden = oe.ID
+    WHERE strftime('%Y', oe.Fecha_Entrada) = ? AND strftime('%m', oe.Fecha_Entrada) = ?
+    GROUP BY p.ID
+    ORDER BY TotalCantidad DESC
+    """
+    cursor.execute(query, (str(year), f"{month:02d}"))
+    results = cursor.fetchall()
+    
+    if not results:
+        return f"No se encontraron productos utilizados en {month}/{year}."
+    
+    response = f"Productos utilizados en {month}/{year}:\n"
+    for nombre, categoria, total_cantidad in results:
+        response += f"- {nombre} (Categoría: {categoria}), Cantidad total: {total_cantidad}\n"
+    return response
 
 
 def get_product_usage_for_truck(conn, vin: str, product_id: int, start_date: str, end_date: str):
     """
-    Retrieves the total quantity of a specific product used for a specific truck within a time range.
+    Recupera la cantidad total de un producto específico utilizado en un camión determinado dentro de un rango de fechas, y la devuelve en formato de texto legible.
 
     Args:
-        conn: Database connection.
-        vin (str): The VIN of the truck.
-        product_id (int): The ID of the product.
-        start_date (str): The start date in 'YYYY-MM-DD' format.
-        end_date (str): The end date in 'YYYY-MM-DD' format.
+        conn: Conexión a la base de datos.
+        vin (str): VIN del camión.
+        product_id (int): ID del producto.
+        start_date (str): Fecha de inicio en formato 'YYYY-MM-DD'.
+        end_date (str): Fecha de fin en formato 'YYYY-MM-DD'.
 
     Returns:
-        Total quantity of the product used for the truck in the specified time range.
+        str: Una cadena de texto con la cantidad total utilizada o un mensaje indicando que no se encontró uso del producto.
     """
     cursor = conn.cursor()
     query = """
-    SELECT SUM(ps.Cantidad) as TotalCantidad
+    SELECT p.Nombre, p.Categoria, SUM(ps.Cantidad) as TotalCantidad
     FROM Productos_Servicio ps
     JOIN Orden_Entrada oe ON ps.ID_Orden = oe.ID
+    JOIN Productos p ON ps.ID_Producto = p.ID
     WHERE oe.ID_Camion = ? AND ps.ID_Producto = ?
       AND oe.Fecha_Entrada BETWEEN ? AND ?
     """
     cursor.execute(query, (vin, product_id, start_date, end_date))
     result = cursor.fetchone()
-    return result[0] if result[0] is not None else 0
+    
+    if result and result[2]:
+        nombre = result[0]
+        categoria = result[1]
+        total_cantidad = result[2]
+        return (f"El producto '{nombre}' (Categoría: {categoria}) se utilizó {total_cantidad} "
+                f"veces para el camión con VIN {vin} entre {start_date} y {end_date}.")
+    else:
+        return (f"No se encontró uso del producto con ID {product_id} para el camión con VIN {vin} "
+                f"entre {start_date} y {end_date}.")
+
 
 
 def get_products_used_for_truck(conn, vin: str):
     """
-    Retrieves all products used and their quantities for a specific truck across all orders.
+    Recupera todos los productos utilizados y sus cantidades para un camión específico, y los devuelve en un formato de texto legible.
 
     Args:
-        conn: Database connection.
-        vin (str): The VIN of the truck.
+        conn: Conexión a la base de datos.
+        vin (str): VIN del camión.
 
     Returns:
-        List of tuples containing product name, category, and total quantity used for the truck.
+        str: Una cadena de texto con los productos utilizados o un mensaje indicando que no se encontraron productos.
     """
     cursor = conn.cursor()
     query = """
@@ -604,18 +700,27 @@ def get_products_used_for_truck(conn, vin: str):
     ORDER BY TotalCantidad DESC
     """
     cursor.execute(query, (vin,))
-    return cursor.fetchall()
+    results = cursor.fetchall()
+    
+    if not results:
+        return f"No se encontraron productos utilizados para el camión con VIN {vin}."
+    
+    response = f"Productos utilizados para el camión con VIN {vin}:\n"
+    for nombre, categoria, total_cantidad in results:
+        response += f"- {nombre} (Categoría: {categoria}), Cantidad total: {total_cantidad}\n"
+    return response
+
 
 def get_order_count_for_branch(conn, sucursal: str):
     """
-    Retrieves the number of orders for a specific branch.
+    Recupera el número de órdenes para una sucursal específica y lo devuelve en formato de texto legible.
 
     Args:
-        conn: Database connection.
-        sucursal (str): The name or identifier of the branch.
+        conn: Conexión a la base de datos.
+        sucursal (str): Nombre o identificador de la sucursal.
 
     Returns:
-        Integer representing the number of orders for the branch.
+        str: Una cadena de texto con el número de órdenes o un mensaje indicando que no se encontraron órdenes.
     """
     cursor = conn.cursor()
     query = """
@@ -625,19 +730,24 @@ def get_order_count_for_branch(conn, sucursal: str):
     """
     cursor.execute(query, (sucursal,))
     result = cursor.fetchone()
-    return result[0]
+    count = result[0] if result else 0
+
+    if count > 0:
+        return f"La sucursal '{sucursal}' ha procesado {count} órdenes."
+    else:
+        return f"No se encontraron órdenes para la sucursal '{sucursal}'."
 
 
 def get_order_details_for_truck(conn, vin: str):
     """
-    Retrieves the number of orders, motives, and dates for a specific truck.
+    Recupera las órdenes, motivos y fechas para un camión específico y las devuelve en un formato de texto legible.
 
     Args:
-        conn: Database connection.
-        vin (str): The VIN of the truck.
+        conn: Conexión a la base de datos.
+        vin (str): VIN del camión.
 
     Returns:
-        A list of dictionaries containing order ID, motive, and date.
+        str: Una cadena de texto con los detalles de las órdenes o un mensaje indicando que no se encontraron órdenes.
     """
     cursor = conn.cursor()
     query = """
@@ -648,8 +758,86 @@ def get_order_details_for_truck(conn, vin: str):
     """
     cursor.execute(query, (vin,))
     orders = cursor.fetchall()
-    return [{"OrderID": order[0], "Motivo": order[1], "Fecha_Entrada": order[2]} for order in orders]
+    
+    if not orders:
+        return f"No se encontraron órdenes para el camión con VIN {vin}."
+    
+    response = f"Órdenes para el camión con VIN {vin}:\n"
+    for order_id, motivo, fecha_entrada in orders:
+        response += f"- Orden ID: {order_id}, Motivo: {motivo}, Fecha de Entrada: {fecha_entrada}\n"
+    return response
 
+#Excel Table
+
+def export_orders_to_excel(db_path: str, excel_path: str):
+    """
+    Exporta campos específicos de la base de datos a un archivo de Excel utilizando pandas.
+    Crea el archivo y su directorio si no existen.
+
+    Args:
+        db_path (str): Ruta al archivo de la base de datos SQLite.
+        excel_path (str): Ruta donde se guardará el archivo de Excel.
+    
+    Returns:
+        None
+    """
+    try:
+        # Verificar si la base de datos existe
+        if not os.path.exists(db_path):
+            print(f"La base de datos en '{db_path}' no existe.")
+            return
+
+        # Asegurarse de que el directorio del archivo Excel exista
+        directory = os.path.dirname(excel_path)
+        if directory and not os.path.exists(directory):
+            os.makedirs(directory, exist_ok=True)
+            print(f"Directorio '{directory}' creado para almacenar el archivo Excel.")
+
+        # Conectar a la base de datos
+        conn = sqlite3.connect(db_path)
+
+        # Definir la consulta SQL con los joins necesarios
+        query = """
+        SELECT 
+            c.Marca AS MARCA,
+            c.Modelo AS MODELO,
+            c.VIN AS VIN,
+            c.NumeroUnidad AS NUMERO_UNIDAD,
+            oe.Fecha_Entrada AS FECHA_ENTRADA_ORDEN,
+            oe.ID AS ID_ORDEN_ENTRADA,
+            oe.Tipo AS TIPO_MANTENIMIENTO,
+            oe.Status AS STATUS,
+            p.Categoria AS CATEGORIA_PRODUCTOS,
+            c.Kilometraje AS KILOMETRAJE,
+            oe.Fecha_Salida AS FECHA_SALIDA_ORDEN
+        FROM Orden_Entrada oe
+        JOIN Camion c ON oe.ID_Camion = c.VIN
+        JOIN Productos_Servicio ps ON oe.ID = ps.ID_Orden
+        JOIN Productos p ON ps.ID_Producto = p.ID
+        ORDER BY oe.Fecha_Entrada DESC
+        """
+
+        # Ejecutar la consulta y cargar los datos en un DataFrame de pandas
+        df = pd.read_sql_query(query, conn)
+
+        # Cerrar la conexión a la base de datos
+        conn.close()
+
+        # Verificar si el DataFrame está vacío
+        if df.empty:
+            print("No se encontraron datos para exportar.")
+            return
+
+        # Exportar el DataFrame a un archivo de Excel
+        df.to_excel(excel_path, index=False)
+
+        print(f"Datos exportados exitosamente a '{excel_path}'.")
+
+    except sqlite3.Error as e:
+        print(f"Error al conectar o consultar la base de datos: {e}")
+
+    except Exception as ex:
+        print(f"Ocurrió un error inesperado: {ex}")
 
 
 #Informnation
@@ -682,7 +870,7 @@ Use Case: Removes a truck from the system, for example, if it is no longer in se
 
 Create Order with Products Tool:
 
-Requirements: Manager's ID, entry date, status, truck's VIN, maintenance reason, entry mileage.
+Requirements: Manager's ID, entry date, status, truck's VIN, maintenance reason,type of maintenance, entry mileage.
 Use Case: Used by the manager to create an entrance order when a truck arrives for service. This tool captures all essential order details and interactively queries the user to associate products and consumables used during the service.
 
 Read Orden Entrada Tool:
@@ -702,8 +890,8 @@ Use Case: Removes an entrance order from the system, for instance, if it was cre
 
 Salida Orden Entrada Tool:
 
-Requirements: Order ID, exit date, status (should be updated to "liberated").
-Use Case: Used by the manager to finalize an entrance order when service is completed. It records the exit date and changes the status to "liberated," indicating that the truck is ready for pickup.
+Requirements: Order ID, exit date,exit motive, status (should be updated to "liberada").
+Use Case: Used by the manager to finalize an entrance order when service is completed. It records the exit date and changes the status to "liberada," indicating that the truck is ready for pickup.
 
 Read Producto Tool:
 
@@ -758,10 +946,11 @@ Entrance Order Creation:
 Establishes a relationship with the specific shop branch.
 Includes detailed truck information: unique identification (VIN) and odometer reading at entry.
 Documents the manager responsible for the order.
-Specifies the maintenance category:
+Specifies the maintenance type:
 Corrective: Addressing existing issues or malfunctions.
 Preventive: Performing routine checks and services to prevent future problems.
 Consumable: Replacing regularly depleted items, such as oil or filters.
+
 Product and Consumable Tracking:
 
 The entrance order is linked to a table listing all products and consumables used.
@@ -769,13 +958,13 @@ Vital for inventory management, ensuring all parts and materials are accounted f
 Order Status Management:
 
 Each order has a status reflecting its current stage:
-In Process: The truck is currently being serviced.
-Inactive: The service is temporarily halted.
-Liberated: The service is completed, and the truck is ready for pickup.
+Proceso: The truck is currently being serviced.
+Inactiva: The service is temporarily halted.
+Liberada: The service is completed, and the truck is ready for pickup.
 Mechanics update the entrance order with any additional information or status changes during maintenance.
 Service Completion:
 
-Upon completion, the manager registers the exit date and changes the status to "liberated."
+Upon completion, the manager registers the exit date and changes the status to "liberada."
 Indicates the truck has been fully serviced and is ready to be returned to the customer.
 By meticulously recording all this information and utilizing the integrated tools, the mechanic shop ensures a seamless operation that tracks every aspect of the service process. This comprehensive system allows for:
 

@@ -25,6 +25,7 @@ from datetime import datetime, date, timezone
 import os.path
 from langgraph.checkpoint.sqlite import SqliteSaver
 import sqlite3
+from langchain_core.messages import RemoveMessage
 from utilsdb import (
     create_camion,
     read_camion,
@@ -45,6 +46,7 @@ from utilsdb import (
     get_products_used_for_truck,
     get_order_count_for_branch,
     get_order_details_for_truck,
+    export_orders_to_excel,
 )
 
 from langchain_core.runnables import ensure_config
@@ -73,16 +75,14 @@ os.environ['LANGCHAIN_PROJECT']
 
 
 
-
-#Database
-
-
-# Database details
+#FILE PATHS
+ruta_base_datos = 'mecanicos.db'
+ruta_excel = 'ordenes_entrada.xlsx'
 
 #LLm Select
 
 llm = ChatGroq(
-            model="llama-3.1-70b-versatilehol",
+            model="llama-3.1-70b-versatile",
             temperature=0,
         )
 
@@ -186,14 +186,14 @@ def create_config(user_phone_number, thread_id=None):
 #Camion
 
 @tool
-def create_camion_tool(vin: str, numero_unidad: int, kilometraje: float, marca: str, modelo: str) -> Dict[str, Any]:
+def create_camion_tool(vin: str, numero_unidad: int, kilometraje: int, marca: str, modelo: str) -> Dict[str, Any]:
     """
     Creates a new 'Camion' record in the database.
 
     Args:
         vin (str): The VIN of the camion.
         numero_unidad (int): The unit number of the camion.
-        kilometraje (float): The mileage of the camion.
+        kilometraje (int): The mileage of the camion.
         marca (str): The brand of the camion.
         modelo (str): The model of the camion.
 
@@ -237,7 +237,7 @@ def read_camion_tool(vin: str) -> Dict[str, Any]:
 def update_camion_tool(
     vin: str,
     numero_unidad: Optional[int] = None,
-    kilometraje: Optional[float] = None,
+    kilometraje: Optional[int] = None,
     marca: Optional[str] = None,
     modelo: Optional[str] = None
 ) -> Dict[str, Any]:
@@ -319,8 +319,10 @@ def update_orden_entrada_tool(
     status: Optional[str] = None,
     fecha_salida: Optional[str] = None,
     id_camion: Optional[str] = None,
-    motivo: Optional[str] = None,
-    kilometraje_entrada: Optional[float] = None
+    motivo_entrada: Optional[str] = None,
+    motivo_salida: Optional[str] = None,
+    tipo: Optional[str] = None,
+    kilometraje_entrada: Optional[int] = None
 ) -> Dict[str, Any]:
     """
     Updates an existing 'Orden_Entrada' record in the database.
@@ -332,7 +334,9 @@ def update_orden_entrada_tool(
         status (str, optional): New status.
         fecha_salida (str, optional): New exit date.
         id_camion (str, optional): New camion VIN.
-        motivo (str, optional): New motive.
+        tipo (str, optional): New maintenance type.
+        motivo_entrada (str, optional): New entry reason.
+        motivo_salida (str, optional): New exit reason.
         kilometraje_entrada (float, optional): New entry mileage.
 
     Returns:
@@ -348,7 +352,9 @@ def update_orden_entrada_tool(
             status=status,
             fecha_salida=fecha_salida,
             id_camion=id_camion,
-            motivo=motivo,
+            motivo_entrada=motivo_entrada,
+            motivo_salida=motivo_salida,
+            tipo=tipo,
             kilometraje_entrada=kilometraje_entrada
         )
         conn.close()
@@ -379,7 +385,7 @@ def delete_orden_entrada_tool(orden_id: int) -> Dict[str, Any]:
         return {"error": str(e)}
 
 @tool
-def salida_orden_entrada_tool(orden_id: int, fecha_salida: str, status: str) -> Dict[str, Any]:
+def salida_orden_entrada_tool(orden_id: int, fecha_salida: str, status: str,motivo_salida:str) -> Dict[str, Any]:
     """
     Updates the 'fecha_salida' and 'status' of an existing Orden_Entrada.
 
@@ -387,13 +393,14 @@ def salida_orden_entrada_tool(orden_id: int, fecha_salida: str, status: str) -> 
         orden_id (int): ID of the order to update.
         fecha_salida (str): Exit date in 'YYYY-MM-DD' format.
         status (str): New status of the order.
+        motivo_salida (str): Reason for the exit.
 
     Returns:
         dict: A success message or an error message.
     """
     try:
         conn = sqlite3.connect('mecanicos.db')
-        result = salida_orden_entrada(conn, orden_id, fecha_salida, status)
+        result = salida_orden_entrada(conn, orden_id, fecha_salida, status, motivo_salida)
         conn.close()
         return result
     except Exception as e:
@@ -507,8 +514,9 @@ def create_order_with_products_tool(
     fecha_entrada: str,
     status: str,
     id_camion: str,
-    motivo: str,
-    kilometraje_entrada: float
+    motivo_entrada: str,
+    tipo: str,
+    kilometraje_entrada: int
 ) -> Dict[str, Any]:
     """
     Creates a new 'Orden_Entrada' with associated products by calling the existing 'create_order_with_products' function.
@@ -518,8 +526,9 @@ def create_order_with_products_tool(
         fecha_entrada (str): Entry date in 'YYYY-MM-DD' format.
         status (str): Status of the order.
         id_camion (str): VIN of the truck.
-        motivo (str): Reason for maintenance.
-        kilometraje_entrada (float): Mileage upon entry.
+        motivo_entrada (str): Reason for maintenance.
+        tipo (str): Maintenance type(PREVENTIVO,CORRECTIVO,CONSUMIBLE).
+        kilometraje_entrada (int): Mileage upon entry.
 
     Returns:
         dict: A success message or an error message.
@@ -535,7 +544,8 @@ def create_order_with_products_tool(
             fecha_entrada,
             status,
             id_camion,
-            motivo,
+            motivo_entrada,
+            tipo,
             kilometraje_entrada
         )
 
@@ -704,6 +714,12 @@ def get_company_info(state) -> str:
     company_info = mechanics_operation
     return {"company_info": company_info}
 
+def delete_messages(state):
+    messages = state["messages"]
+    if len(messages) > 3:
+        return {"messages": [RemoveMessage(id=m.id) for m in messages[:-3]]}
+
+
 
 #Classes
 
@@ -747,6 +763,7 @@ company_tools_safe = [
     read_producto_tool,
     read_productos_servicio_tool,
     create_order_with_products_tool,
+    salida_orden_entrada_tool,
     get_products_used_in_month_tool,
     get_product_total_usage_for_truck_tool,
     get_products_used_for_truck_tool,
@@ -760,7 +777,7 @@ company_tools_auth = [
     delete_camion_tool,
     update_orden_entrada_tool,
     delete_orden_entrada_tool,
-    salida_orden_entrada_tool,
+ 
     update_producto_tool,
     delete_producto_tool,
     
@@ -793,16 +810,20 @@ builder.add_node(
 )
 
 builder.add_edge("operation_info", "assistant")
-
+builder.add_node(delete_messages)
 # Define logic
 
 
 
-def route_tools(state: State) -> Literal["safe_tools", "sensitive_tools", "__end__"]:
+def route_tools(state: State) -> Literal["safe_tools","delete_messages", "sensitive_tools", "__end__"]:
     next_node = tools_condition(state)
+    last_message = state["messages"][-1]
     # If no tools are invoked, return to the user
     if next_node == END:
-        return END
+        if not last_message.tool_calls:
+            return "delete_messages"
+        else:
+            return END
     ai_message = state["messages"][-1]
     # This assumes single tool calls. To handle parallel tool calling, you'd want to
     # use an ANY condition
@@ -818,6 +839,7 @@ builder.add_conditional_edges(
 )
 builder.add_edge("safe_tools", "assistant")
 builder.add_edge("sensitive_tools", "assistant")
+builder.add_edge("delete_messages", END)
 
 
 memory = MemorySaver()
@@ -880,8 +902,8 @@ def get_response (question,config):
         # Note: This code is all outside of your graph. Typically, you would stream the output to a UI.
         # Then, you would have the frontend trigger a new run via an API call when the user has provided input.
         user_input = input(
-            "Do you approve of the above actions? Type 'y' to continue;"
-            " otherwise, explain your requested changed.\n\n"
+            "Quieres continuar con las acciones? Escribe 'y' para continuar;"
+            " de lo contratrio menciona que tu deseo cambio\n\n"
         )
         if user_input.strip() == "y":
             # Just continue
@@ -914,4 +936,9 @@ while(True):
     input_question = input()
     res = get_response(input_question,configuration)
     print(res)
+    # Llamar a la función para exportar los datos
+    export_orders_to_excel(ruta_base_datos, ruta_excel)
+
+
+
     
