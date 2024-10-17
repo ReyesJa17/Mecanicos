@@ -185,14 +185,14 @@ def create_config(user_phone_number, thread_id=None):
 #Camion
 
 @tool
-def create_camion_tool(vin: str, numero_unidad: int, kilometraje: float, marca: str, modelo: str) -> Dict[str, Any]:
+def create_camion_tool(vin: str, numero_unidad: int, kilometraje: int, marca: str, modelo: str) -> Dict[str, Any]:
     """
     Creates a new 'Camion' record in the database.
 
     Args:
         vin (str): The VIN of the camion.
         numero_unidad (int): The unit number of the camion.
-        kilometraje (float): The mileage of the camion.
+        kilometraje (int): The mileage of the camion.
         marca (str): The brand of the camion.
         modelo (str): The model of the camion.
 
@@ -236,7 +236,7 @@ def read_camion_tool(vin: str) -> Dict[str, Any]:
 def update_camion_tool(
     vin: str,
     numero_unidad: Optional[int] = None,
-    kilometraje: Optional[float] = None,
+    kilometraje: Optional[int] = None,
     marca: Optional[str] = None,
     modelo: Optional[str] = None
 ) -> Dict[str, Any]:
@@ -317,13 +317,11 @@ def update_orden_entrada_tool(
     fecha_entrada: Optional[str] = None,
     status: Optional[str] = None,
     fecha_salida: Optional[str] = None,
-    
     id_camion: Optional[str] = None,
     motivo_entrada: Optional[str] = None,
     motivo_salida: Optional[str] = None,
     tipo: Optional[str] = None,
-    
-    kilometraje_entrada: Optional[float] = None
+    kilometraje_entrada: Optional[int] = None
 ) -> Dict[str, Any]:
     """
     Updates an existing 'Orden_Entrada' record in the database.
@@ -517,7 +515,7 @@ def create_order_with_products_tool(
     id_camion: str,
     motivo_entrada: str,
     tipo: str,
-    kilometraje_entrada: float
+    kilometraje_entrada: int
 ) -> Dict[str, Any]:
     """
     Creates a new 'Orden_Entrada' with associated products by calling the existing 'create_order_with_products' function.
@@ -527,8 +525,9 @@ def create_order_with_products_tool(
         fecha_entrada (str): Entry date in 'YYYY-MM-DD' format.
         status (str): Status of the order.
         id_camion (str): VIN of the truck.
-        motivo (str): Reason for maintenance.
-        kilometraje_entrada (float): Mileage upon entry.
+        motivo_entrada (str): Reason for maintenance.
+        tipo (str): Maintenance type(PREVENTIVO,CORRECTIVO,CONSUMIBLE).
+        kilometraje_entrada (int): Mileage upon entry.
 
     Returns:
         dict: A success message or an error message.

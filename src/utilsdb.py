@@ -48,7 +48,7 @@ def initialize_database(db_path: str):
                 Motivo_Entrada TEXT,
                 Motivo_Salida TEXT,
                 Tipo TEXT CHECK(Tipo IN ('CONSUMIBLE', 'PREVENTIVO', 'CORRECTIVO')),
-                Kilometraje_Entrada REAL NOT NULL
+                Kilometraje_Entrada INTEGER NOT NULL
             );
 
             -- Table: Camion
@@ -418,7 +418,7 @@ def create_order_with_products(conn, id_encargado, fecha_entrada, status, id_cam
         id_camion (str): VIN of the truck.
         motivo_entrada (str): Motivo de entrada.
         tipo (str): Tipo de mantenimiento ('CONSUMIBLE', 'PREVENTIVO', 'CORRECTIVO').
-        kilometraje_entrada (float): Mileage upon entry.
+        kilometraje_entrada (int): Mileage upon entry.
 
     Returns:
         dict: A message indicating success or an error.
