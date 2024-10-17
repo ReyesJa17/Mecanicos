@@ -82,13 +82,12 @@ os.environ['LANGCHAIN_PROJECT']
 #LLm Select
 
 llm = ChatGroq(
-            model="llama-3.1-8b-instant",
+            model="llama-3.1-70b-versatilehol",
             temperature=0,
         )
 
 
 #Prompts
-
 
 
 
