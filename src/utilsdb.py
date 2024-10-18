@@ -32,14 +32,14 @@ def initialize_database(db_path: str):
             sql_script = """
             -- Table: Productos
             CREATE TABLE IF NOT EXISTS Productos (
-                ID INTEGER PRIMARY KEY AUTOINCREMENT,
+                ID INTEGER PRIMARY KEY NOT NULL,
                 Nombre TEXT NOT NULL,
                 Categoria TEXT NOT NULL
             );
 
             -- Table: Orden_Entrada
             CREATE TABLE IF NOT EXISTS Orden_Entrada (
-                ID INTEGER PRIMARY KEY AUTOINCREMENT,
+                ID INTEGER PRIMARY NOT NULL,
                 ID_Encargado TEXT NOT NULL,
                 Fecha_Entrada DATE NOT NULL,
                 Status TEXT NOT NULL CHECK(Status IN ('liberada', 'proceso', 'inactiva')),
@@ -222,7 +222,7 @@ def update_productos_servicio(conn, id_orden, id_producto, new_id_orden=None, ne
 
 
 #Orden_Entrada
-def create_orden_entrada(conn, id_encargado: str, fecha_entrada: str, status: str, id_camion: str, motivo_entrada: str, tipo: str, kilometraje_entrada: int):
+def create_orden_entrada(conn, orden_id:int,id_encargado: str, fecha_entrada: str, status: str, id_camion: str, motivo_entrada: str, tipo: str, kilometraje_entrada: int):
     """
     Crea una nueva Orden_Entrada en la base de datos.
 
@@ -242,10 +242,10 @@ def create_orden_entrada(conn, id_encargado: str, fecha_entrada: str, status: st
     cursor = conn.cursor()
     try:
         query = """
-        INSERT INTO Orden_Entrada (ID_Encargado, Fecha_Entrada, Status, ID_Camion, Motivo_Entrada, Tipo, Kilometraje_Entrada)
+        INSERT INTO Orden_Entrada (ID,ID_Encargado, Fecha_Entrada, Status, ID_Camion, Motivo_Entrada, Tipo, Kilometraje_Entrada)
         VALUES (?, ?, ?, ?, ?, ?, ?)
         """
-        cursor.execute(query, (id_encargado, fecha_entrada, status, id_camion, motivo_entrada, tipo, kilometraje_entrada))
+        cursor.execute(query, (orden_id,id_encargado, fecha_entrada, status, id_camion, motivo_entrada, tipo, kilometraje_entrada))
         conn.commit()
         return {"message": "Orden de entrada creada exitosamente."}
     except sqlite3.Error as e:
@@ -406,12 +406,13 @@ def delete_producto(conn, producto_id):
 
 
 #ORDEN ENTRADA WITH PRODUCTS AND CAMION
-def create_order_with_products(conn, id_encargado, fecha_entrada, status, id_camion, motivo_entrada, tipo, kilometraje_entrada):
+def create_order_with_products(conn,orden_id,  id_encargado, fecha_entrada, status, id_camion, motivo_entrada, tipo, kilometraje_entrada):
     """
     Creates a new Orden_Entrada, adds a Camion if it doesn't exist, and associates products with the order.
 
     Args:
         conn: Database connection.
+        orden_id (int): ID of the order.
         id_encargado (str): Identifier of the encargado (manager).
         fecha_entrada (str): Entry date in 'YYYY-MM-DD' format.
         status (str): Status of the order ('liberada', 'proceso', 'inactiva').
@@ -450,17 +451,17 @@ def create_order_with_products(conn, id_encargado, fecha_entrada, status, id_cam
             create_camion(conn, id_camion, numero_unidad, kilometraje, marca, modelo)
             print(f"Camión con VIN '{id_camion}' ha sido creado.")
 
+        if not orden_id:
+            print("Por favor, proporciona un ID de orden válido.")
+            orden_id = input("ID de Orden: ")
+
         # Create the Orden_Entrada
-        create_orden_entrada(conn, id_encargado, fecha_entrada, status, id_camion, motivo_entrada, tipo, kilometraje_entrada)
+        create_orden_entrada(conn, orden_id,id_encargado, fecha_entrada, status, id_camion, motivo_entrada, tipo, kilometraje_entrada)
         print("Orden de entrada ha sido creada.")
 
-        # Retrieve the ID of the newly created order
-        orden_id = cursor.lastrowid
 
-        if not orden_id:
-            # If lastrowid is not available, fetch the max ID
-            cursor.execute("SELECT MAX(ID) FROM Orden_Entrada")
-            orden_id = cursor.fetchone()[0]
+
+    
 
         print("Por favor proporciona los ID de los productos usados en el servicio.")
         print("Ingresa 'finish' cuando hayas terminado.")
@@ -870,7 +871,7 @@ Use Case: Removes a truck from the system, for example, if it is no longer in se
 
 Create Order with Products Tool:
 
-Requirements: Manager's ID, entry date, status, truck's VIN, maintenance reason,type of maintenance, entry mileage.
+Requirements: Order ID, Manager's ID, entry date, status, truck's VIN, maintenance reason,type of maintenance, entry mileage.
 Use Case: Used by the manager to create an entrance order when a truck arrives for service. This tool captures all essential order details and interactively queries the user to associate products and consumables used during the service.
 
 Read Orden Entrada Tool:
