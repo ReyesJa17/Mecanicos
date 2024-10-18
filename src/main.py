@@ -510,6 +510,7 @@ def read_productos_servicio_tool(id_orden: int) -> Dict[str, Any]:
 #Create Orden and associate with camion and products
 @tool
 def create_order_with_products_tool(
+    order_id:int,
     id_encargado: str,
     fecha_entrada: str,
     status: str,
@@ -522,6 +523,7 @@ def create_order_with_products_tool(
     Creates a new 'Orden_Entrada' with associated products by calling the existing 'create_order_with_products' function.
 
     Args:
+        order_id (int): Identifier of the order.
         id_encargado (str): Identifier of the encargado (manager).
         fecha_entrada (str): Entry date in 'YYYY-MM-DD' format.
         status (str): Status of the order.
@@ -540,6 +542,7 @@ def create_order_with_products_tool(
         # Call the existing 'create_order_with_products' function
         result = create_order_with_products(
             conn,
+            order_id,
             id_encargado,
             fecha_entrada,
             status,
