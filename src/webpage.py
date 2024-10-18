@@ -7,7 +7,7 @@ app = Flask(__name__)
 def get_data(query):
     try:
         # Conexión a la base de datos SQLite
-        conn = sqlite3.connect('ruta_de_tu_base_de_datos.db')
+        conn = sqlite3.connect('mecanicos.db')
 
         # Ejecutar la consulta SQL y cargar el resultado en un DataFrame
         df = pd.read_sql_query(query, conn)
