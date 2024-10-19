@@ -32,14 +32,14 @@ def initialize_database(db_path: str):
             sql_script = """
             -- Table: Productos
             CREATE TABLE IF NOT EXISTS Productos (
-                ID INTEGER PRIMARY KEY NOT NULL,
+                ID INTEGER PRIMARY KEY AUTOINCREMENT,
                 Nombre TEXT NOT NULL,
                 Categoria TEXT NOT NULL
             );
 
             -- Table: Orden_Entrada
             CREATE TABLE IF NOT EXISTS Orden_Entrada (
-                ID INTEGER PRIMARY NOT NULL,
+                ID INTEGER PRIMARY KEY NOT NULL,
                 ID_Encargado TEXT NOT NULL,
                 Fecha_Entrada DATE NOT NULL,
                 Status TEXT NOT NULL CHECK(Status IN ('liberada', 'proceso', 'inactiva')),
@@ -217,22 +217,22 @@ def update_productos_servicio(conn, id_orden, id_producto, new_id_orden=None, ne
     except sqlite3.IntegrityError as e:
         return {"error": f"Failed to update Productos_Servicio: {e}"}
 
-
-
-
-
 #Orden_Entrada
-def create_orden_entrada(conn, orden_id:int,id_encargado: str, fecha_entrada: str, status: str, id_camion: str, motivo_entrada: str, tipo: str, kilometraje_entrada: int):
+
+def create_orden_entrada(conn, orden_id: int, id_encargado: str, fecha_entrada: str, status: str, fecha_salida: str, id_camion: str, motivo_entrada: str, motivo_salida: str, tipo: str, kilometraje_entrada: int):
     """
     Crea una nueva Orden_Entrada en la base de datos.
 
     Args:
         conn: Conexión a la base de datos.
+        orden_id (int): Identificador de la orden.
         id_encargado (str): Identificador del encargado.
         fecha_entrada (str): Fecha de entrada en formato 'YYYY-MM-DD'.
         status (str): Estado inicial de la orden.
+        fecha_salida (str): Fecha de salida en formato 'YYYY-MM-DD'.
         id_camion (str): VIN del camión.
         motivo_entrada (str): Motivo de entrada.
+        motivo_salida (str): Motivo de salida.
         tipo (str): Tipo de mantenimiento ('CONSUMIBLE', 'PREVENTIVO', 'CORRECTIVO').
         kilometraje_entrada (int): Kilometraje al entrar.
 
@@ -240,12 +240,13 @@ def create_orden_entrada(conn, orden_id:int,id_encargado: str, fecha_entrada: st
         dict: Mensaje de éxito o de error.
     """
     cursor = conn.cursor()
+
     try:
         query = """
-        INSERT INTO Orden_Entrada (ID,ID_Encargado, Fecha_Entrada, Status, ID_Camion, Motivo_Entrada, Tipo, Kilometraje_Entrada)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO Orden_Entrada (ID, ID_Encargado, Fecha_Entrada, Status, Fecha_Salida, ID_Camion, Motivo_Entrada, Motivo_Salida, Tipo, Kilometraje_Entrada)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
-        cursor.execute(query, (orden_id,id_encargado, fecha_entrada, status, id_camion, motivo_entrada, tipo, kilometraje_entrada))
+        cursor.execute(query, (orden_id, id_encargado, fecha_entrada, status, fecha_salida, id_camion, motivo_entrada, motivo_salida, tipo, kilometraje_entrada))
         conn.commit()
         return {"message": "Orden de entrada creada exitosamente."}
     except sqlite3.Error as e:
@@ -406,9 +407,10 @@ def delete_producto(conn, producto_id):
 
 
 #ORDEN ENTRADA WITH PRODUCTS AND CAMION
-def create_order_with_products(conn,orden_id,  id_encargado, fecha_entrada, status, id_camion, motivo_entrada, tipo, kilometraje_entrada):
+def create_order_with_products(conn, orden_id, id_encargado, fecha_entrada, status, id_camion, motivo_entrada, tipo, kilometraje_entrada):
     """
     Creates a new Orden_Entrada, adds a Camion if it doesn't exist, and associates products with the order.
+    After creation, verifies and prints the contents of relevant tables.
 
     Args:
         conn: Database connection.
@@ -454,14 +456,11 @@ def create_order_with_products(conn,orden_id,  id_encargado, fecha_entrada, stat
         if not orden_id:
             print("Por favor, proporciona un ID de orden válido.")
             orden_id = input("ID de Orden: ")
-
+        fecha_salida = None
+        motivo_salida = None
         # Create the Orden_Entrada
-        create_orden_entrada(conn, orden_id,id_encargado, fecha_entrada, status, id_camion, motivo_entrada, tipo, kilometraje_entrada)
+        create_orden_entrada(conn, orden_id, id_encargado, fecha_entrada, status, fecha_salida, id_camion, motivo_entrada, motivo_salida, tipo, kilometraje_entrada)
         print("Orden de entrada ha sido creada.")
-
-
-
-    
 
         print("Por favor proporciona los ID de los productos usados en el servicio.")
         print("Ingresa 'finish' cuando hayas terminado.")
@@ -503,18 +502,53 @@ def create_order_with_products(conn,orden_id,  id_encargado, fecha_entrada, stat
             except ValueError:
                 print("ID de producto inválido. Por favor, ingresa un entero válido.")
 
+        # Verification: Print contents of relevant tables
+        print("\n--- Verificación de datos en las tablas ---")
+
+        # Fetch and print Camion table contents
+        print("\nTabla 'Camion':")
+        cursor.execute("SELECT * FROM Camion WHERE VIN = ?", (id_camion,))
+        camiones = cursor.fetchall()
+        for camion in camiones:
+            print(camion)
+
+        # Fetch and print Orden_Entrada table contents
+        print("\nTabla 'Orden_Entrada':")
+        cursor.execute("SELECT * FROM Orden_Entrada WHERE ID = ?", (orden_id,))
+        ordenes = cursor.fetchall()
+        for orden in ordenes:
+            print(orden)
+
+        # Fetch and print Productos_Servicio table contents
+        print("\nTabla 'Productos_Servicio':")
+        cursor.execute("SELECT * FROM Productos_Servicio WHERE ID_Orden = ?", (orden_id,))
+        productos_servicio = cursor.fetchall()
+        for ps in productos_servicio:
+            print(ps)
+
+        # Fetch and print Productos table contents for associated products
+        print("\nProductos asociados en la tabla 'Productos':")
+        cursor.execute("""
+            SELECT p.* FROM Productos p
+            INNER JOIN Productos_Servicio ps ON p.ID = ps.ID_Producto
+            WHERE ps.ID_Orden = ?
+        """, (orden_id,))
+        productos = cursor.fetchall()
+        for producto in productos:
+            print(producto)
+
         return {"message": f"La orden con ID {orden_id} ha sido creada exitosamente con los productos asociados."}
 
     except sqlite3.Error as e:
         return {"error": f"Ocurrió un error: {e}"}
 
+
     
 
 #Create Products
-
 def add_categories_and_products(conn, categories_and_products):
     """
-    Adds categories and their associated products to the Productos table with predefined IDs.
+    Adds categories and their associated products to the Productos table with unique IDs.
 
     Args:
         conn: Database connection.
@@ -522,7 +556,10 @@ def add_categories_and_products(conn, categories_and_products):
     """
     cursor = conn.cursor()
     try:
-        product_id = 1  # Start ID from 1
+        # Get the current maximum ID from Productos table
+        cursor.execute("SELECT COALESCE(MAX(ID), 0) FROM Productos")
+        product_id = cursor.fetchone()[0] + 1  # Start from the next available ID
+
         for category_data in categories_and_products:
             category = category_data['category']
             products = category_data['products']
@@ -532,12 +569,12 @@ def add_categories_and_products(conn, categories_and_products):
                 # Insert product into Productos table with predefined ID
                 query = "INSERT INTO Productos (ID, Nombre, Categoria) VALUES (?, ?, ?)"
                 cursor.execute(query, (product_id, product_name, category))
-                product_id += 1  # Increment ID for next product
+                product_id += 1  # Increment ID for the next product
+
         conn.commit()
         print("Categories and products added successfully with predefined IDs.")
     except sqlite3.Error as e:
         print(f"An error occurred while adding categories and products: {e}")
-
 
 
 #Information queries

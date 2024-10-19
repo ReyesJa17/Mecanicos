@@ -1,4 +1,5 @@
 import getpass
+from langchain_core.messages import AIMessage
 import os
 import datetime as dt
 from langchain_core.runnables import RunnableLambda, Runnable, RunnableConfig
@@ -24,6 +25,7 @@ from typing import Optional, Union, List, Any
 from datetime import datetime, date, timezone
 import os.path
 from langgraph.checkpoint.sqlite import SqliteSaver
+from langchain_core.tools import tool
 import sqlite3
 from langchain_core.messages import RemoveMessage
 from utilsdb import (
@@ -64,7 +66,8 @@ from utilsdb import initialize_database
 from typing import Callable
 from dotenv import load_dotenv
 import os
-
+from langchain_openai import ChatOpenAI
+import openai
 load_dotenv()  # Carga todas las variables del archivo .env al entorno
 
 # Ahora puedes acceder a las variables con os.environ
@@ -72,8 +75,9 @@ os.environ['GROQ_API_KEY']
 os.environ['LANGCHAIN_API_KEY']
 os.environ['LANGCHAIN_TRACING_V2']
 os.environ['LANGCHAIN_PROJECT']
+os.environ['OPENAI_API_KEY']
 
-
+llm = ChatOpenAI(model="gpt-4o-mini")
 
 #FILE PATHS
 ruta_base_datos = 'mecanicos.db'
@@ -81,7 +85,7 @@ ruta_excel = 'ordenes_entrada.xlsx'
 
 #LLm Select
 
-llm = ChatGroq(
+llm1 = ChatGroq(
             model="llama-3.1-70b-versatile",
             temperature=0,
         )
@@ -719,9 +723,9 @@ def get_company_info(state) -> str:
 
 def delete_messages(state):
     messages = state["messages"]
-    if len(messages) > 3:
+    if len(messages) > 13:
+        print("Deleting messages")
         return {"messages": [RemoveMessage(id=m.id) for m in messages[:-3]]}
-
 
 
 #Classes
@@ -756,7 +760,8 @@ class Assistant:
         return {"messages": result}
 
 
-
+def human_review_node(state):
+    pass
 
 #Tools assignation
 
@@ -770,7 +775,6 @@ company_tools_safe = [
     get_products_used_in_month_tool,
     get_product_total_usage_for_truck_tool,
     get_products_used_for_truck_tool,
-    get_order_count_for_branch_tool,
     get_order_details_for_truck_tool,
 ]
 
@@ -792,6 +796,7 @@ tools_auth_names = {t.name for t in company_tools_auth}
 
 
 runnable =  prompt_manger | llm.bind_tools(company_tools_auth + company_tools_safe)
+
 
 # Graph
 
@@ -879,41 +884,43 @@ configuration = {
 
 
 
+
+
 def run_multiple_questions():
 
     _printed = set()
     for question in tutorial_questions:
         events = part_1_graph.stream(
-            {"messages": ("user", question)}, configuration, stream_mode="values"
+            {"messages": ("user", question)}, thread_id, stream_mode="values"
         )
         for event in events:
             _print_event(event, _printed)
 
 
 def get_response (question,config):
-    _printed = set()
-    i=0
-    events = part_1_graph.stream(
-        {"messages": ("user", question)}, config, stream_mode="values"
-    )
-    for event in events:
-        #_print_event(event, _printed)
-        a=0
+    initial_input = {"messages": [{"role": "user", "content": question}]}
+
+    for event in part_1_graph.stream(
+        initial_input, config, stream_mode="values"
+    ):
+        i=0
+        #print(event)
     snapshot = part_1_graph.get_state(config)
     while snapshot.next:
-        # We have an interrupt! The agent is trying to use a tool, and the user can approve or deny it
-        # Note: This code is all outside of your graph. Typically, you would stream the output to a UI.
-        # Then, you would have the frontend trigger a new run via an API call when the user has provided input.
-        user_input = input(
-            "Quieres continuar con las acciones? Escribe 'y' para continuar;"
-            " de lo contratrio menciona que tu deseo cambio\n\n"
-        )
+        try:
+            user_input = input(
+                "Do you approve of the above actions? Type 'y' to continue;"
+                " otherwise, explain your requested changed.\n\n"
+            )
+        except:
+            user_input = "y"
         if user_input.strip() == "y":
             # Just continue
             result = part_1_graph.invoke(
                 None,
                 config,
             )
+            return result.get("messages")[-1].content
         else:
             # Satisfy the tool invocation by
             # providing instructions on the requested changes / change of mind
@@ -928,9 +935,14 @@ def get_response (question,config):
                 },
                 config,
             )
+            return result.get("messages")[-1].content
         snapshot = part_1_graph.get_state(config)
     
-    return event.get("messages")[-1].content
+        print(snapshot)
+        
+    result= event.get("messages")[-1].content
+
+    return result
 
 
 
@@ -939,9 +951,9 @@ while(True):
     input_question = input()
     res = get_response(input_question,configuration)
     print(res)
-    # Llamar a la función para exportar los datos
+    
     export_orders_to_excel(ruta_base_datos, ruta_excel)
-
+    # Llamar a la función para exportar los datos
 
 
     

@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Tabla de Órdenes de Entrada</title>
+    <!-- Bootstrap CSS para estilos estéticos -->
+    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.0/css/bootstrap.min.css">
+    <!-- Fuente personalizada de Google Fonts -->
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto&display=swap">
+    <style>
+        body {
+            background-color: #ffffff;
+            color: #000000;
+            font-family: 'Roboto', sans-serif; /* Fuente personalizada */
+        }
+        h1 {
+            color: #ffffff;
+            background-color: #001f3f;
+            padding: 20px;
+            text-align: center;
+            font-size: 36px;
+            font-weight: bold;
+            margin-bottom: 0;
+        }
+        .table-container {
+            margin: 20px auto;
+            width: 90%;
+        }
+        table {
+            margin-top: 0;
+            table-layout: fixed;
+            word-wrap: break-word;
+        }
+        th, td {
+            text-align: center;
+            vertical-align: middle;
+            border: 1px solid #dddddd;
+            padding: 8px;
+            white-space: normal; /* Permitir que el texto se ajuste y respete los saltos de línea */
+        }
+        th {
+            background-color: #001f3f;
+            color: white;
+        }
+        tr:nth-child(even) {
+            background-color: #f2f2f2;
+        }
+        tr:hover {
+            background-color: #d9eaff;
+        }
+        /* Ajustar ancho de la columna 'Productos_Servicio' */
+        th:nth-child(10), td:nth-child(10) {
+            width: 200px; /* Puedes ajustar el valor según necesites */
+            text-align: left; /* Alinear el texto a la izquierda */
+        }
+        /* Justificar el texto en la columna 'Productos_Servicio' */
+        td:nth-child(10) {
+            text-align: left;
+        }
+        /* Ajustar la fuente de las celdas */
+        table, th, td {
+            font-size: 14px; /* Puedes ajustar el tamaño de fuente */
+        }
+    </style>
+</head>
+<body>
+    <h1>Tabla de Órdenes de Entrada</h1>
+    <div class="table-container">
+        {{ table_html | safe }}
+    </div>
+</body>
+</html>
