@@ -76,6 +76,7 @@ os.environ['LANGCHAIN_API_KEY']
 os.environ['LANGCHAIN_TRACING_V2']
 os.environ['LANGCHAIN_PROJECT']
 os.environ['OPENAI_API_KEY']
+GROQ_API_KEY = os.getenv('GROQ_API_KEY')
 
 llm = ChatOpenAI(model="gpt-4o-mini")
 
@@ -512,9 +513,14 @@ def read_productos_servicio_tool(id_orden: int) -> Dict[str, Any]:
 
 
 #Create Orden and associate with camion and products
+#Create Orden and associate with camion and products
+#Create Orden and associate with camion and products
+#Create Orden and associate with camion and products
+#Create Orden and associate with camion and products
+
 @tool
 def create_order_with_products_tool(
-    order_id:int,
+    order_id: int,
     id_encargado: str,
     fecha_entrada: str,
     status: str,
@@ -540,6 +546,22 @@ def create_order_with_products_tool(
         dict: A success message or an error message.
     """
     try:
+        # Send a provisional response indicating that user authorization is required
+        provisional_message = "Esperando autorización del usuario para proceder con la creación de la orden."
+        send_response(json.dumps({"response": provisional_message}), "Mecanicos-respuesta-Bot")
+
+        # Send an authorization request to the user via RabbitMQ
+        prompt = "¿Deseas proceder con la creación de la orden? Responde 'y' para continuar o 'n' para cancelar."
+        send_response(json.dumps({"response": prompt}), "Mecanicos-respuesta-Bot")
+
+        # Wait for user authorization (blocking call or implement wait logic)
+        user_response = wait_for_user_input(order_id)
+
+        if user_response.strip().lower() != 'y':
+            cancel_message = "La operación fue cancelada por el usuario."
+            send_response(json.dumps({"response": cancel_message}), "Mecanicos-respuesta-Bot")
+            return {"messages": [{"content": cancel_message, "tool_call_id": "call_f0xd8HGKt17IEIKNGqqzGtIC"}]}
+
         # Open the database connection
         conn = sqlite3.connect('mecanicos.db')
 
@@ -556,16 +578,40 @@ def create_order_with_products_tool(
             kilometraje_entrada
         )
 
-        # Close the connection
+        # Close the database connection
         conn.close()
 
-        return result
+        # Extract response messages
+        response_messages = result.get("messages", [])
+        if not response_messages:
+            response_messages = ["Operación completada sin mensajes adicionales."]
+
+        # Send the generated messages to the user via RabbitMQ if there are messages
+        try:
+            connection = pika.BlockingConnection(pika.ConnectionParameters('localhost'))
+            channel = connection.channel()
+            for message in response_messages:
+                if message:  # Ensure message is not empty
+                    response_payload = json.dumps({"response": message})
+                    send_response(response_payload, "Mecanicos-respuesta-Bot")
+            connection.close()
+        except Exception as rabbitmq_error:
+            logging.error(f"Error sending response to RabbitMQ: {rabbitmq_error}")
+
+        return {"messages": [{"content": "Orden creada exitosamente.", "tool_call_id": "call_f0xd8HGKt17IEIKNGqqzGtIC"}]}
+
     except Exception as e:
         logging.error(f"Error creating order with products: {e}")
-        return {"error": str(e)}
-    
+        error_message = {"error": f"Error al procesar la solicitud: {str(e)}"}
 
-#Info Rettrieval
+        # Send the error message through the function send_response
+        try:
+            error_payload = json.dumps(error_message)
+            send_response(error_payload, "Mecanicos-respuesta-Bot")
+        except Exception as rabbitmq_error:
+            logging.error(f"Error sending error response to RabbitMQ: {rabbitmq_error}")
+
+        return {"messages": [{"content": str(error_message), "tool_call_id": "call_f0xd8HGKt17IEIKNGqqzGtIC"}]}
 
 @tool
 def get_products_used_in_month_tool(year: int, month: int) -> List[Dict[str, Any]]:
@@ -869,7 +915,7 @@ tutorial_questions = [
 
 
 
-thread_id = str(uuid.uuid4())
+"""thread_id = str(uuid.uuid4())
 
 
 configuration = {
@@ -894,66 +940,282 @@ def run_multiple_questions():
             {"messages": ("user", question)}, thread_id, stream_mode="values"
         )
         for event in events:
-            _print_event(event, _printed)
+            _print_event(event, _printed)"""
+
+###PRINCIPAL
+
+import json
+import pika
+import time
 
 
-def get_response (question,config):
-    initial_input = {"messages": [{"role": "user", "content": question}]}
 
-    for event in part_1_graph.stream(
-        initial_input, config, stream_mode="values"
-    ):
-        i=0
-        #print(event)
-    snapshot = part_1_graph.get_state(config)
-    while snapshot.next:
-        try:
-            user_input = input(
-                "Do you approve of the above actions? Type 'y' to continue;"
-                " otherwise, explain your requested changed.\n\n"
-            )
-        except:
-            user_input = "y"
-        if user_input.strip() == "y":
-            # Just continue
-            result = part_1_graph.invoke(
-                None,
-                config,
-            )
-            return result.get("messages")[-1].content
-        else:
-            # Satisfy the tool invocation by
-            # providing instructions on the requested changes / change of mind
-            result = part_1_graph.invoke(
-                {
-                    "messages": [
-                        ToolMessage(
-                            tool_call_id=event["messages"][-1].tool_calls[0]["id"],
-                            content=f"API call denied by user. Reasoning: '{user_input}'. Continue assisting, accounting for the user's input.",
-                        )
-                    ]
-                },
-                config,
-            )
-            return result.get("messages")[-1].content
-        snapshot = part_1_graph.get_state(config)
-    
-        print(snapshot)
+def get_response(question, config):
+    try:
+        user_id = config.get("configurable", {}).get("thread_id")
+        if user_id is None:
+            raise ValueError("'user_id' no fue proporcionado.")
+
+        # Iniciar el procesamiento con el bot
+        initial_input = {"messages": [{"role": "user", "content": question}]}
+        events = part_1_graph.stream(initial_input, config, stream_mode="values")
         
-    result= event.get("messages")[-1].content
+        final_event = None
+        for event in events:
+            final_event = event
+            snapshot = part_1_graph.get_state(config)
+            
+            # Verificar si se necesita confirmación
+            if snapshot.next and any("¿Quieres continuar con las acciones?" in str(msg.content) for msg in event.get("messages", []) if hasattr(msg, 'content')):
+                prompt = "¿Quieres continuar con las acciones? Escribe 'y' para continuar; de lo contrario menciona que tu deseo cambió."
+                send_response(json.dumps({"number": user_id, "response": prompt}), 'Mecanicos-respuesta-Bot')
+                
+                user_input = wait_for_user_input(user_id)
+                
+                if user_input is None:
+                    return "No se recibió respuesta del usuario en el tiempo esperado."
+                
+                if user_input.strip().lower() == "y":
+                    result = part_1_graph.invoke(None, config)
+                else:
+                    result = part_1_graph.invoke(
+                        {
+                            "messages": [
+                                {
+                                    "tool_call_id": event["messages"][-1].tool_calls[0]["id"] if event["messages"][-1].tool_calls else None,
+                                    "content": f"API call denied by user. Reasoning: '{user_input}'. Continue assisting, accounting for the user's input.",
+                                }
+                            ]
+                        },
+                        config,
+                    )
+                # Actualizar el evento final con el resultado de la confirmación
+                final_event = result
+            
+        if final_event is None:
+            raise ValueError("No se recibieron eventos del grafo.")
 
-    return result
+        # Obtener la respuesta final del bot
+        final_response = final_event["messages"][-1].content if isinstance(final_event["messages"][-1], dict) else final_event["messages"][-1].content
+        
+        # Enviar la respuesta final (solo una vez)
+        send_response(json.dumps({"number": user_id, "response": final_response}), 'Mecanicos-respuesta-Bot')
+        return final_response
+
+    except Exception as e:
+        error_message = f"Error al procesar la solicitud: {str(e)}"
+        print(error_message)
+        send_response(json.dumps({"number": user_id, "response": error_message}), 'Mecanicos-respuesta-Bot')
+        return error_message
+
+def wait_for_user_input(user_id, timeout=30):
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        for message in captured_messages:
+            if message.get("number") == user_id:
+                captured_messages.remove(message)
+                return message.get("textMessage")
+        time.sleep(0.1)
+    return None
+
+# El resto de tu código (main, send_response, etc.) permanece igual
+
+
+# Transcribir el archivo de audio utilizando la API de Groq
+
+import requests
+def transcribe_audio_groq(wav_file_path):
+    url = "https://api.groq.com/openai/v1/audio/transcriptions"
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}"
+    }
+    try:
+        with open(wav_file_path, 'rb') as audio_file:
+            files = {
+                'file': audio_file
+            }
+            data = {
+                'model': 'whisper-large-v3-turbo',
+                'response_format': 'json',
+                'temperature': 0.0
+            }
+            response = requests.post(url, headers=headers, files=files, data=data)
+            response.raise_for_status()  # Lanza un error si la respuesta tiene un estatus de error
+            response_data = response.json()
+            transcribed_text = response_data.get("text", "")
+
+            if transcribed_text:
+                # Paso adicional: Enviar la transcripción al LLM para una mejor respuesta
+                
+                qa_prompt = ChatPromptTemplate.from_messages([
+                    ("system", """You are a specialized transcription improvement assistant. Your sole function is to enhance the clarity and comprehensibility of the input transcription. Follow these strict guidelines:
+
+                    1. Provide ONLY the improved version of the input transcription.
+                    2. Do not add any commentary, explanations, or additional information.
+                    3. Maintain the original meaning and intent of the transcription.
+                    4. Replace local jargon or complex terminology with more widely understood equivalents.
+                    5. Correct any grammatical errors or awkward phrasings to improve readability.
+                    6. Ensure the improved transcription flows naturally and is easily understood by a general audience.
+                    7. If the input is already clear and standard, return it unchanged.
+                    8. Do not include any introductory or concluding remarks in your response.
+
+                    Your output should consist solely of the improved transcription text."""),
+                        ("human", transcribed_text),
+                        ])
+
+
+                prompt = qa_prompt.format()
+
+                # Generar la respuesta utilizando el modelo Groq
+                response = llm.invoke([{"role": "user", "content": prompt}])  # Cambié a invoke para llamar al modelo
+                return response.content
+            else:
+                return "No se pudo transcribir el audio."
+    except requests.exceptions.RequestException as e:
+        return f"Error al realizar la solicitud: {e}"
 
 
 
+# Procesar mensajes de chat
 
-while(True):
-    input_question = input()
-    res = get_response(input_question,configuration)
-    print(res)
-    
-    export_orders_to_excel(ruta_base_datos, ruta_excel)
-    # Llamar a la función para exportar los datos
+import pika
+import json
+import base64
+import time
+import subprocess
+import os
+
+def on_message(ch, method, properties, body):
+    ogg_file_path = "/tmp/temp_audio.ogg"
+    wav_file_path = "/tmp/temp_audio.wav"
+    try:
+        message = json.loads(body.decode())
+        print(f"[x] Received from Mecanicos-chat: {message}")
+
+        user_id = message.get("number")
+
+        if method.routing_key == "Mecanicos-chat":
+            user_message = message.get("textMessage")
+
+            if user_message is None:
+                raise KeyError("textMessage")
+
+            # Crear la configuración con 'thread_id'
+            config_chat = {"configurable": {"thread_id": user_id}}
+
+            # Procesar el mensaje usando la función get_response
+            response = get_response(user_message, config_chat)
+
+        elif method.routing_key == "Mecanicos-audios":
+            audio_base64 = message.get("audio")
+
+            if not audio_base64:
+                print("Advertencia: Mensaje de audio recibido sin contenido de 'audio'. Verifique el mensaje enviado a la cola.")
+                return
+
+            # Verificar si el contenido de audio_base64 es una cadena vacía
+            if len(audio_base64.strip()) == 0:
+                print("Advertencia: El campo 'audio' está presente pero vacío.")
+                return
+
+            # Decodificar el audio de base64
+            try:
+                audio_data = base64.b64decode(audio_base64)
+            except base64.binascii.Error as e:
+                print(f"Error al decodificar el audio en base64: {e}")
+                return
+
+            # Guardar el archivo de audio temporalmente en formato OGG
+            with open(ogg_file_path, "wb") as audio_file:
+                audio_file.write(audio_data)
+
+            print(f"[x] Audio guardado temporalmente en formato OGG en: {ogg_file_path}")
+
+            # Convertir el archivo OGG a WAV
+            try:
+                subprocess.run(["ffmpeg", "-y", "-i", ogg_file_path, wav_file_path], check=True)
+                print(f"[x] Archivo convertido a WAV en: {wav_file_path}")
+            except subprocess.CalledProcessError as e:
+                print(f"Error al convertir el archivo OGG a WAV: {e}")
+                return
+
+            # Transcribir el audio
+            transcribed_text = transcribe_audio_groq(wav_file_path)
+            if transcribed_text:
+                # Crear la configuración con 'thread_id'
+                config_chat = {"configurable": {"thread_id": user_id}}
+
+                response = get_response(transcribed_text, config_chat)
+
+    except KeyError as e:
+        print(f"Error: Faltan datos clave en el mensaje recibido: {e}")
+    except Exception as e:
+        print(f"Error al procesar el mensaje: {e}")
+    finally:
+        # Limpiar los archivos temporales
+        if os.path.exists(ogg_file_path):
+            os.remove(ogg_file_path)
+        if os.path.exists(wav_file_path):
+            os.remove(wav_file_path)
 
 
-    
+# Función para enviar la respuesta a RabbitMQ
+def send_response(response, queue_name):
+    try:
+        # Conexión con RabbitMQ con credenciales guest y host localhost
+        credentials = pika.PlainCredentials('guest', 'guest')
+        connection_params = pika.ConnectionParameters('localhost', 5672, '/', credentials)
+        connection = pika.BlockingConnection(connection_params)
+        channel = connection.channel()
+
+        # Declarar la cola de regreso
+        channel.queue_declare(queue=queue_name, durable=True)
+        channel.basic_publish(
+            exchange='',
+            routing_key=queue_name,
+            body=response,
+            properties=pika.BasicProperties(
+                delivery_mode=2,  # hacer el mensaje persistente
+            )
+        )
+        print(f"[x] Sent response to {queue_name}: {response}")
+    except Exception as e:
+        print(f"Error al enviar la respuesta: {str(e)}")
+    finally:
+        if 'connection' in locals() and connection.is_open:
+            connection.close()
+
+
+def main():
+    while True:
+        try:
+            # Conexión con RabbitMQ con credenciales guest y host localhost
+            credentials = pika.PlainCredentials('guest', 'guest')
+            connection_params = pika.ConnectionParameters('localhost', 5672, '/', credentials)
+            connection = pika.BlockingConnection(connection_params)
+            channel = connection.channel()
+
+            # Declarar las colas Mecanicos-chat y Mecanicos-audios
+            channel.queue_declare(queue='Mecanicos-chat', durable=True)
+            channel.queue_declare(queue='Mecanicos-audios', durable=True)
+
+            # Configurar los consumidores para ambas colas
+            channel.basic_consume(queue='Mecanicos-chat', on_message_callback=on_message, auto_ack=True  )
+            channel.basic_consume(queue='Mecanicos-audios', on_message_callback=on_message, auto_ack=True  )
+
+            print(f"[*] Waiting for messages in Mecanicos-chat and Mecanicos-audios. To exit press CTRL+C")
+
+            # Iniciar el consumo de mensajes
+            channel.start_consuming()
+        except pika.exceptions.AMQPConnectionError as e:
+            print(f"Error en la conexión principal: {str(e)}. Reintentando en 5 segundos...")
+            time.sleep(5)
+        except Exception as e:
+            print(f"Error inesperado: {str(e)}")
+        finally:
+            if 'connection' in locals() and connection.is_open:
+                connection.close()
+
+if __name__ == "__main__":
+    captured_messages = []
+    main()

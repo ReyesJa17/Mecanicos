@@ -404,13 +404,35 @@ def delete_producto(conn, producto_id):
     query = "DELETE FROM Productos WHERE ID = ?"
     cursor.execute(query, (producto_id,))
     conn.commit()
+import sqlite3
+import json
+import pika
+from typing import Dict, Any
 
 
-#ORDEN ENTRADA WITH PRODUCTS AND CAMION
-def create_order_with_products(conn, orden_id, id_encargado, fecha_entrada, status, id_camion, motivo_entrada, tipo, kilometraje_entrada):
+
+import sqlite3
+from typing import Dict, Any, List
+
+def create_order_with_products(
+    conn: sqlite3.Connection,
+    orden_id: int,
+    id_encargado: str,
+    fecha_entrada: str,
+    status: str,
+    id_camion: str,
+    motivo_entrada: str,
+    tipo: str,
+    kilometraje_entrada: int,
+    numero_unidad: int = None,
+    camion_kilometraje: float = None,
+    marca: str = None,
+    modelo: str = None,
+    productos: List[Dict[str, Any]] = None
+) -> Dict[str, Any]:
     """
     Creates a new Orden_Entrada, adds a Camion if it doesn't exist, and associates products with the order.
-    After creation, verifies and prints the contents of relevant tables.
+    Receives user input through function arguments rather than RabbitMQ.
 
     Args:
         conn: Database connection.
@@ -422,10 +444,16 @@ def create_order_with_products(conn, orden_id, id_encargado, fecha_entrada, stat
         motivo_entrada (str): Motivo de entrada.
         tipo (str): Tipo de mantenimiento ('CONSUMIBLE', 'PREVENTIVO', 'CORRECTIVO').
         kilometraje_entrada (int): Mileage upon entry.
+        numero_unidad (int, optional): Número de unidad del camión.
+        camion_kilometraje (float, optional): Kilometraje del camión.
+        marca (str, optional): Marca del camión.
+        modelo (str, optional): Modelo del camión.
+        productos (list of dict, optional): Lista de productos a asociar con la orden.
 
     Returns:
-        dict: A message indicating success or an error.
+        dict: A message indicating success or an error, along with the accumulated messages.
     """
+    messages = []
     try:
         cursor = conn.cursor()
 
@@ -434,116 +462,93 @@ def create_order_with_products(conn, orden_id, id_encargado, fecha_entrada, stat
         camion = cursor.fetchone()
 
         if not camion:
-            print(f"El camión con el VIN '{id_camion}' no se ha registrado")
-            # Prompt user to enter Camion details
-            print("Por favor proporciona los datos requeridos para su creación:")
-            numero_unidad = input("Número de Unidad: ")
-            kilometraje = input("Kilometraje: ")
-            marca = input("Marca: ")
-            modelo = input("Modelo: ")
-
-            # Convert Numero Unidad and Kilometraje to appropriate types
-            try:
-                numero_unidad = int(numero_unidad)
-                kilometraje = float(kilometraje)
-            except ValueError:
-                return {"error": "Entrada inválida para Número de Unidad o Kilometraje."}
+            messages.append(f"El camión con el VIN '{id_camion}' no se ha registrado")
+            
+            # Ensure all inputs for creating a Camion are provided
+            if not (numero_unidad and camion_kilometraje and marca and modelo):
+                error_message = "Faltan datos para crear el camión."
+                messages.append(error_message)
+                return {"error": error_message, "messages": messages}
 
             # Create the new Camion
-            create_camion(conn, id_camion, numero_unidad, kilometraje, marca, modelo)
-            print(f"Camión con VIN '{id_camion}' ha sido creado.")
+            create_camion(conn, id_camion, numero_unidad, camion_kilometraje, marca, modelo)
+            messages.append(f"Camión con VIN '{id_camion}' ha sido creado.")
 
+        # Check if orden_id is provided
         if not orden_id:
-            print("Por favor, proporciona un ID de orden válido.")
-            orden_id = input("ID de Orden: ")
+            error_message = "No se proporcionó un ID de orden válido."
+            messages.append(error_message)
+            return {"error": error_message, "messages": messages}
+
         fecha_salida = None
         motivo_salida = None
         # Create the Orden_Entrada
         create_orden_entrada(conn, orden_id, id_encargado, fecha_entrada, status, fecha_salida, id_camion, motivo_entrada, motivo_salida, tipo, kilometraje_entrada)
-        print("Orden de entrada ha sido creada.")
+        messages.append("Orden de entrada ha sido creada.")
 
-        print("Por favor proporciona los ID de los productos usados en el servicio.")
-        print("Ingresa 'finish' cuando hayas terminado.")
-
-        while True:
-            product_input = input("Ingresa el ID del producto (o 'finish' para terminar): ")
-            if product_input.lower() == 'finish':
-                break
-            try:
-                id_producto = int(product_input)
-
-                # Validate that the product exists
-                cursor.execute("SELECT ID, Nombre, Categoria FROM Productos WHERE ID = ?", (id_producto,))
-                product = cursor.fetchone()
-                if not product:
-                    print(f"El producto con ID {id_producto} no existe. Por favor, ingresa un ID de producto válido.")
-                    continue
-
-                product_name = product[1]
-                product_category = product[2]
-
-                # Prompt for quantity
-                cantidad_input = input(f"Selecciona la cantidad para '{product_name}' (Categoría: {product_category}): ")
+        # Associate products with the order if provided
+        if productos:
+            for product in productos:
                 try:
-                    cantidad = int(cantidad_input)
-                    if cantidad <= 0:
-                        print("La cantidad debe ser un entero positivo.")
+                    id_producto = product.get('id_producto')
+                    cantidad = product.get('cantidad')
+
+                    # Validate that the product exists
+                    cursor.execute("SELECT ID FROM Productos WHERE ID = ?", (id_producto,))
+                    product_data = cursor.fetchone()
+                    if not product_data:
+                        messages.append(f"El producto con ID {id_producto} no existe. Por favor, ingresa un ID de producto válido.")
                         continue
+
+                    if not cantidad or cantidad <= 0:
+                        messages.append(f"La cantidad para el producto con ID {id_producto} debe ser un entero positivo.")
+                        continue
+
+                    # Associate the product with the order via its ID
+                    result = create_productos_servicio(conn, orden_id, id_producto, cantidad)
+                    messages.append(result.get('message', 'Producto agregado con éxito.'))
                 except ValueError:
-                    print("Cantidad inválida.")
-                    continue
+                    messages.append("ID de producto inválido. Por favor, ingresa un entero válido.")
 
-                # Associate the product with the order via its ID
-                result = create_productos_servicio(conn, orden_id, id_producto, cantidad)
-                if 'error' in result:
-                    print(result['error'])
-                else:
-                    print(result['message'])
-            except ValueError:
-                print("ID de producto inválido. Por favor, ingresa un entero válido.")
+        # Verification: Add verification messages to the list
+        messages.append("--- Verificación de datos en las tablas ---")
 
-        # Verification: Print contents of relevant tables
-        print("\n--- Verificación de datos en las tablas ---")
-
-        # Fetch and print Camion table contents
-        print("\nTabla 'Camion':")
+        # Fetch and add Camion table contents
         cursor.execute("SELECT * FROM Camion WHERE VIN = ?", (id_camion,))
         camiones = cursor.fetchall()
-        for camion in camiones:
-            print(camion)
+        messages.append(f"Tabla 'Camion': {camiones}")
 
-        # Fetch and print Orden_Entrada table contents
-        print("\nTabla 'Orden_Entrada':")
+        # Fetch and add Orden_Entrada table contents
         cursor.execute("SELECT * FROM Orden_Entrada WHERE ID = ?", (orden_id,))
         ordenes = cursor.fetchall()
-        for orden in ordenes:
-            print(orden)
+        messages.append(f"Tabla 'Orden_Entrada': {ordenes}")
 
-        # Fetch and print Productos_Servicio table contents
-        print("\nTabla 'Productos_Servicio':")
+        # Fetch and add Productos_Servicio table contents
         cursor.execute("SELECT * FROM Productos_Servicio WHERE ID_Orden = ?", (orden_id,))
         productos_servicio = cursor.fetchall()
-        for ps in productos_servicio:
-            print(ps)
+        messages.append(f"Tabla 'Productos_Servicio': {productos_servicio}")
 
-        # Fetch and print Productos table contents for associated products
-        print("\nProductos asociados en la tabla 'Productos':")
+        # Fetch and add Productos table contents for associated products
         cursor.execute("""
             SELECT p.* FROM Productos p
             INNER JOIN Productos_Servicio ps ON p.ID = ps.ID_Producto
             WHERE ps.ID_Orden = ?
         """, (orden_id,))
-        productos = cursor.fetchall()
-        for producto in productos:
-            print(producto)
+        productos_asociados = cursor.fetchall()
+        messages.append(f"Productos asociados en la tabla 'Productos': {productos_asociados}")
 
-        return {"message": f"La orden con ID {orden_id} ha sido creada exitosamente con los productos asociados."}
+        return {"message": f"La orden con ID {orden_id} ha sido creada exitosamente con los productos asociados.", "messages": messages}
 
     except sqlite3.Error as e:
-        return {"error": f"Ocurrió un error: {e}"}
+        error_message = f"Ocurrió un error: {e}"
+        messages.append(error_message)
+        return {"error": error_message, "messages": messages}
 
+    finally:
+        # Ensure the cursor is closed
+        cursor.close()
+        messages.append("Conexión a la base de datos cerrada correctamente.")
 
-    
 
 #Create Products
 def add_categories_and_products(conn, categories_and_products):

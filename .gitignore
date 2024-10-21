@@ -1,3 +1,4 @@
 mecanicos/
 src/.env
 src/__pycache__/
+src\auth_info_baileys
