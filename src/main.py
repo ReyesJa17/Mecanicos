@@ -769,7 +769,7 @@ def get_company_info(state) -> str:
 
 def delete_messages(state):
     messages = state["messages"]
-    if len(messages) > 13:
+    if len(messages) > 3:
         print("Deleting messages")
         return {"messages": [RemoveMessage(id=m.id) for m in messages[:-3]]}
 
@@ -806,8 +806,6 @@ class Assistant:
         return {"messages": result}
 
 
-def human_review_node(state):
-    pass
 
 #Tools assignation
 
