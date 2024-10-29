@@ -1,6 +1,8 @@
 import getpass
 from langchain_core.messages import AIMessage
 import os
+import asyncio
+import aio_pika
 import datetime as dt
 from langchain_core.runnables import RunnableLambda, Runnable, RunnableConfig
 from datetime import datetime, date, timezone, timedelta
@@ -1399,6 +1401,77 @@ class RabbitMQConsumer:
                 if self.connection and not self.connection.is_closed:
                     self.connection.close()
                 time.sleep(5)
+
+
+
+async def process_questions(rabbit_url, queue_name, config):
+    # Connect to RabbitMQ
+    connection = await aio_pika.connect_robust(rabbit_url)
+    channel = await connection.channel()
+
+    # Declare queues
+    question_queue = await channel.declare_queue(queue_name, durable=True)
+    approval_queue = await channel.declare_queue(f"{queue_name}_approval", durable=True)
+
+    async with connection:
+        async for question_message in question_queue:
+            question = question_message.body.decode()
+            print(f"Received question: {question}")
+
+            # Stream events based on received question
+            events = part_1_graph.stream({"messages": ("user", question)}, config, stream_mode="values")
+            for event in events:
+                _print_event(event, _printed=True)
+            
+            snapshot = part_1_graph.get_state(config)
+
+            # Check if there's a tool call that needs user approval
+            while snapshot.next:
+                # Ask the user for approval through RabbitMQ
+                approval_request = "Do you approve of the above actions? Type 'y' to continue; otherwise, explain your requested change."
+                await channel.default_exchange.publish(
+                    aio_pika.Message(body=approval_request.encode()),
+                    routing_key=f"{queue_name}_approval"
+                )
+
+                # Wait for user input from approval queue
+                async for approval_message in approval_queue:
+                    user_input = approval_message.body.decode()
+                    approval_message.ack()  # Acknowledge that approval input was received
+
+                    if user_input.strip().lower() == "y":
+                        # Proceed with the action
+                        result = await part_1_graph.invoke(None, config)
+                    else:
+                        # Deny tool call and provide reasoning
+                        result = await part_1_graph.invoke(
+                            {
+                                "messages": [
+                                    ToolMessage(
+                                        tool_call_id=event["messages"][-1].tool_calls[0]["id"],
+                                        content=f"API call denied by user. Reasoning: '{user_input}'. Continue assisting, accounting for the user's input.",
+                                    )
+                                ]
+                            },
+                            config,
+                        )
+                    
+                    snapshot = part_1_graph.get_state(config)
+                    if not snapshot.next:
+                        break  # Break if no further interrupts are required
+
+            # Send the last message content back through RabbitMQ
+            final_message = result.get("messages")[-1].content
+            await channel.default_exchange.publish(
+                aio_pika.Message(body=final_message.encode()),
+                routing_key=f"{queue_name}_response"
+            )
+
+            question_message.ack()  # Acknowledge that the question has been processed
+
+
+# Example usage:
+# asyncio.run(process_questions("amqp://guest:guest@localhost/", "questions_queue", config))
 
 def main():
     consumer = RabbitMQConsumer()
