@@ -928,95 +928,171 @@ configuration = {
 
 
 
-
-
-def run_multiple_questions():
-
-    _printed = set()
-    for question in tutorial_questions:
-        events = part_1_graph.stream(
-            {"messages": ("user", question)}, thread_id, stream_mode="values"
-        )
-        for event in events:
-            _print_event(event, _printed)"""
+"""
 
 ###PRINCIPAL
 
-import json
-import pika
-import time
 
 
 
-def get_response(question, config):
-    try:
-        user_id = config.get("configurable", {}).get("thread_id")
-        if user_id is None:
-            raise ValueError("'user_id' no fue proporcionado.")
 
-        # Iniciar el procesamiento con el bot
-        initial_input = {"messages": [{"role": "user", "content": question}]}
-        events = part_1_graph.stream(initial_input, config, stream_mode="values")
-        
-        final_event = None
-        for event in events:
-            final_event = event
-            snapshot = part_1_graph.get_state(config)
-            
-            # Verificar si se necesita confirmación
-            if snapshot.next and any("¿Quieres continuar con las acciones?" in str(msg.content) for msg in event.get("messages", []) if hasattr(msg, 'content')):
-                prompt = "¿Quieres continuar con las acciones? Escribe 'y' para continuar; de lo contrario menciona que tu deseo cambió."
-                send_response(json.dumps({"number": user_id, "response": prompt}), 'Mecanicos-respuesta-Bot')
-                
-                user_input = wait_for_user_input(user_id)
-                
-                if user_input is None:
-                    return "No se recibió respuesta del usuario en el tiempo esperado."
-                
-                if user_input.strip().lower() == "y":
-                    result = part_1_graph.invoke(None, config)
-                else:
-                    result = part_1_graph.invoke(
-                        {
-                            "messages": [
-                                {
-                                    "tool_call_id": event["messages"][-1].tool_calls[0]["id"] if event["messages"][-1].tool_calls else None,
-                                    "content": f"API call denied by user. Reasoning: '{user_input}'. Continue assisting, accounting for the user's input.",
-                                }
-                            ]
-                        },
-                        config,
-                    )
-                # Actualizar el evento final con el resultado de la confirmación
-                final_event = result
-            
-        if final_event is None:
-            raise ValueError("No se recibieron eventos del grafo.")
 
-        # Obtener la respuesta final del bot
-        final_response = final_event["messages"][-1].content if isinstance(final_event["messages"][-1], dict) else final_event["messages"][-1].content
-        
-        # Enviar la respuesta final (solo una vez)
-        send_response(json.dumps({"number": user_id, "response": final_response}), 'Mecanicos-respuesta-Bot')
-        return final_response
-
-    except Exception as e:
-        error_message = f"Error al procesar la solicitud: {str(e)}"
-        print(error_message)
-        send_response(json.dumps({"number": user_id, "response": error_message}), 'Mecanicos-respuesta-Bot')
-        return error_message
-
-def wait_for_user_input(user_id, timeout=30):
+def wait_for_user_input(user_id, timeout=60):
+    """
+    Espera la respuesta del usuario con manejo mejorado del timeout
+    """
     start_time = time.time()
     while time.time() - start_time < timeout:
-        for message in captured_messages:
+        for message in list(captured_messages):
             if message.get("number") == user_id:
                 captured_messages.remove(message)
                 return message.get("textMessage")
-        time.sleep(0.1)
+        time.sleep(0.5)
     return None
 
-# El resto de tu código (main, send_response, etc.) permanece igual
+
+
+
+
+
+async def get_response(question, user_id):
+    """
+    Maneja la respuesta del grafo, autorizando herramientas sensibles si es necesario.
+    
+    Args:
+        question (str): Pregunta o mensaje del usuario
+        user_id (str/int): Identificador único del usuario
+        
+    Returns:
+        str: Respuesta final del grafo
+    """
+    config = {"configurable": {"thread_id": str(user_id)}}
+    current_messages = []
+
+    try:
+        # Inicializar el stream con la configuración
+        stream = part_1_graph.stream({"messages": [("user", question)]}, config, stream_mode="values")
+        
+        # Recolectar mensajes iniciales
+        async for event in stream:
+            current_messages.append(event)
+
+        # Obtener estado inicial
+        snapshot = await part_1_graph.get_state(config)
+
+        while snapshot.next:
+            if current_messages:
+                last_message = current_messages[-1]
+                tool_calls = (last_message.kwargs.get("tool_calls", []) 
+                            if hasattr(last_message, "kwargs") 
+                            else [])
+
+                if tool_calls:
+                    tool_call = tool_calls[0]
+                    tool_name = (tool_call.get("name", "herramienta desconocida") 
+                               if isinstance(tool_call, dict) 
+                               else getattr(tool_call, "name", "herramienta desconocida"))
+
+                    # Enviar solicitud de autorización
+                    auth_message = (f"Se requiere autorización para la herramienta: {tool_name}. "
+                                  "Responde con 'y' para aprobar o cualquier otra cosa para denegar.")
+                    await send_response({
+                        "number": user_id, 
+                        "response": auth_message
+                    }, queue_name=f"Mecanicos-respuesta-Bot")
+
+                    # Esperar respuesta del usuario
+                    user_response = await wait_for_user_input(user_id)
+                    if user_response is None:
+                        timeout_msg = "Timeout de autorización. Herramienta no aprobada."
+                        await send_response({
+                            "number": user_id, 
+                            "response": timeout_msg
+                        }, queue_name=f"Mecanicos-respuesta-Bot")
+                        return timeout_msg
+
+                    if user_response.lower() == 'y':
+                        await send_response({
+                            "number": user_id, 
+                            "response": "Herramienta aprobada. Continuando..."
+                        }, queue_name=f"Mecanicos-respuesta-Bot")
+                        
+                        await part_1_graph.aupdate_state(
+                            config, 
+                            values={"messages": current_messages}, 
+                            as_node="sensitive_tools"
+                        )
+                    else:
+                        await send_response({
+                            "number": user_id, 
+                            "response": "Herramienta denegada. Cancelando la operación."
+                        }, queue_name=f"Mecanicos-respuesta-Bot")
+                        
+                        tool_call_id = (tool_call.get("id") 
+                                      if isinstance(tool_call, dict) 
+                                      else getattr(tool_call, "id", None))
+                        
+                        if tool_call_id:
+                            denial_message = {
+                                "tool_call_id": tool_call_id, 
+                                "content": f"API call denied by user. Reasoning: '{user_response}'. "
+                                         "Continue assisting, accounting for the user's input."
+                            }
+                            await part_1_graph.aupdate_state(
+                                config, 
+                                values={"messages": [denial_message]}, 
+                                as_node="assistant"
+                            )
+            else:
+                print("No hay mensajes disponibles para procesar en el snapshot actual.")
+
+            snapshot = await part_1_graph.get_state(config)
+
+    except AttributeError as e:
+        error_message = f"Error de atributos: {str(e)}. Verifica que el objeto tenga los métodos correctos."
+        await send_response({
+            "number": user_id, 
+            "response": error_message
+        }, queue_name=f"Mecanicos-respuesta-Bot")
+        return error_message
+        
+    except TypeError as e:
+        error_message = f"Error de tipos: {str(e)}. Verifica que los tipos de datos sean correctos."
+        await send_response({
+            "number": user_id, 
+            "response": error_message
+        }, queue_name=f"Mecanicos-respuesta-Bot")
+        return error_message
+        
+    except Exception as e:
+        error_message = f"Error inesperado: {str(e)}"
+        await send_response({
+            "number": user_id, 
+            "response": error_message
+        }, queue_name=f"Mecanicos-respuesta-Bot")
+        return error_message
+
+    # Procesar respuesta final
+    if current_messages:
+        last_event = current_messages[-1]
+        response_content = (last_event.kwargs.get("content", "No hay respuesta disponible") 
+                          if hasattr(last_event, "kwargs") 
+                          else getattr(last_event, "content", "No hay respuesta disponible"))
+        
+        await send_response({
+            "number": user_id, 
+            "response": response_content
+        }, queue_name=f"Mecanicos-respuesta-Bot")
+        return response_content
+
+    await send_response({
+        "number": user_id, 
+        "response": "No hay respuesta disponible"
+    }, queue_name=f"Mecanicos-respuesta-Bot")
+    return "No hay respuesta disponible"
+
+
+
 
 
 # Transcribir el archivo de audio utilizando la API de Groq
@@ -1075,144 +1151,258 @@ def transcribe_audio_groq(wav_file_path):
 
 
 # Procesar mensajes de chat
-
-import pika
 import json
 import base64
+import os
 import time
 import subprocess
-import os
+import pika
+from pika.exceptions import AMQPConnectionError, AMQPChannelError
 
-def on_message(ch, method, properties, body):
-    ogg_file_path = "/tmp/temp_audio.ogg"
-    wav_file_path = "/tmp/temp_audio.wav"
-    try:
-        message = json.loads(body.decode())
-        print(f"[x] Received from Mecanicos-chat: {message}")
+# Lista global para capturar mensajesimport json
+import pika
 
-        user_id = message.get("number")
+captured_messages = []
 
-        if method.routing_key == "Mecanicos-chat":
-            user_message = message.get("textMessage")
-
-            if user_message is None:
-                raise KeyError("textMessage")
-
-            # Crear la configuración con 'thread_id'
-            config_chat = {"configurable": {"thread_id": user_id}}
-
-            # Procesar el mensaje usando la función get_response
-            response = get_response(user_message, config_chat)
-
-        elif method.routing_key == "Mecanicos-audios":
-            audio_base64 = message.get("audio")
-
-            if not audio_base64:
-                print("Advertencia: Mensaje de audio recibido sin contenido de 'audio'. Verifique el mensaje enviado a la cola.")
-                return
-
-            # Verificar si el contenido de audio_base64 es una cadena vacía
-            if len(audio_base64.strip()) == 0:
-                print("Advertencia: El campo 'audio' está presente pero vacío.")
-                return
-
-            # Decodificar el audio de base64
-            try:
-                audio_data = base64.b64decode(audio_base64)
-            except base64.binascii.Error as e:
-                print(f"Error al decodificar el audio en base64: {e}")
-                return
-
-            # Guardar el archivo de audio temporalmente en formato OGG
-            with open(ogg_file_path, "wb") as audio_file:
-                audio_file.write(audio_data)
-
-            print(f"[x] Audio guardado temporalmente en formato OGG en: {ogg_file_path}")
-
-            # Convertir el archivo OGG a WAV
-            try:
-                subprocess.run(["ffmpeg", "-y", "-i", ogg_file_path, wav_file_path], check=True)
-                print(f"[x] Archivo convertido a WAV en: {wav_file_path}")
-            except subprocess.CalledProcessError as e:
-                print(f"Error al convertir el archivo OGG a WAV: {e}")
-                return
-
-            # Transcribir el audio
-            transcribed_text = transcribe_audio_groq(wav_file_path)
-            if transcribed_text:
-                # Crear la configuración con 'thread_id'
-                config_chat = {"configurable": {"thread_id": user_id}}
-
-                response = get_response(transcribed_text, config_chat)
-
-    except KeyError as e:
-        print(f"Error: Faltan datos clave en el mensaje recibido: {e}")
-    except Exception as e:
-        print(f"Error al procesar el mensaje: {e}")
-    finally:
-        # Limpiar los archivos temporales
-        if os.path.exists(ogg_file_path):
-            os.remove(ogg_file_path)
-        if os.path.exists(wav_file_path):
-            os.remove(wav_file_path)
-
-
-# Función para enviar la respuesta a RabbitMQ
 def send_response(response, queue_name):
+    """Función para enviar respuestas a RabbitMQ"""
     try:
-        # Conexión con RabbitMQ con credenciales guest y host localhost
+        # Crear una nueva conexión para cada envío
         credentials = pika.PlainCredentials('guest', 'guest')
-        connection_params = pika.ConnectionParameters('localhost', 5672, '/', credentials)
+        connection_params = pika.ConnectionParameters(
+            host='localhost',
+            port=5672,
+            virtual_host='/',
+            credentials=credentials,
+            heartbeat=600
+        )
         connection = pika.BlockingConnection(connection_params)
         channel = connection.channel()
 
-        # Declarar la cola de regreso
-        channel.queue_declare(queue=queue_name, durable=True)
+        # Declarar la cola con los argumentos correctos
+        channel.queue_declare(
+            queue=queue_name,
+            durable=True,
+            arguments={
+                'x-message-ttl': 60000,
+                'x-max-length': 1000  # Added missing argument
+            }
+        )
+
+        # Verificar y serializar la respuesta
+        if isinstance(response, dict):
+            response_str = json.dumps(response)  # Serializar a JSON
+        elif isinstance(response, str):
+            response_str = response
+        else:
+            raise ValueError("El formato de la respuesta no es compatible. Debe ser un dict o una str.")
+
+        # Publicar el mensaje
         channel.basic_publish(
             exchange='',
             routing_key=queue_name,
-            body=response,
+            body=response_str,
             properties=pika.BasicProperties(
-                delivery_mode=2,  # hacer el mensaje persistente
+                delivery_mode=2,  # mensaje persistente
+                content_type='application/json'
             )
         )
-        print(f"[x] Sent response to {queue_name}: {response}")
+        print(f"[x] Respuesta enviada a {queue_name}: {response_str}")
+
     except Exception as e:
-        print(f"Error al enviar la respuesta: {str(e)}")
+        print(f"Error al enviar respuesta: {e}")
     finally:
         if 'connection' in locals() and connection.is_open:
             connection.close()
 
+class RabbitMQConsumer:
+    def __init__(self):
+        self.connection = None
+        self.channel = None
+        self.queue_args = {
+            'x-message-ttl': 60000,  # TTL de 60 segundos
+            'x-max-length': 1000,    # Maximum queue length
+            'durable': True
+        }
+        self.queues = ['Mecanicos-chat', 'Mecanicos-audio']
+        self.temp_files = {
+            'ogg': "/tmp/temp_audio.ogg",
+            'wav': "/tmp/temp_audio.wav"
+        }
+
+    def connect(self):
+        """Establece la conexión con RabbitMQ con reintentos"""
+        max_retries = 5
+        retry_count = 0
+        
+        while retry_count < max_retries:
+            try:
+                credentials = pika.PlainCredentials('guest', 'guest')
+                parameters = pika.ConnectionParameters(
+                    host='localhost',
+                    port=5672,
+                    virtual_host='/',
+                    credentials=credentials,
+                    heartbeat=600,
+                    blocked_connection_timeout=300
+                )
+                self.connection = pika.BlockingConnection(parameters)
+                self.channel = self.connection.channel()
+                print("[*] Conexión establecida con RabbitMQ")
+                return True
+            except AMQPConnectionError as e:
+                retry_count += 1
+                wait_time = min(pow(2, retry_count), 30)
+                print(f"Intento {retry_count}/{max_retries} fallido. Reintentando en {wait_time} segundos...")
+                time.sleep(wait_time)
+        
+        print("No se pudo establecer conexión después de varios intentos")
+        return False
+
+    def setup_queues(self):
+        """Configura las colas con los argumentos correctos"""
+        try:
+            for queue in self.queues:
+                self.channel.queue_declare(
+                    queue=queue,
+                    durable=True,
+                    arguments={
+                        'x-message-ttl': 60000,
+                        'x-max-length': 1000  # Added missing argument
+                    }
+                )
+            
+            # Declarar la cola de respuesta del bot
+            self.channel.queue_declare(
+                queue='Mecanicos-respuesta-Bot',
+                durable=True,
+                arguments={
+                    'x-message-ttl': 60000,
+                    'x-max-length': 1000  # Added missing argument
+                }
+            )
+        except Exception as e:
+            print(f"Error al configurar las colas: {e}")
+            raise
+
+    def process_audio_message(self, message):
+        """Procesa mensajes de audio"""
+        try:
+            audio_base64 = message.get("audio")
+            if not audio_base64 or not audio_base64.strip():
+                print("Advertencia: Audio vacío o inválido")
+                return None
+
+            # Decodificar el audio
+            audio_data = base64.b64decode(audio_base64)
+            with open(self.temp_files['ogg'], "wb") as audio_file:
+                audio_file.write(audio_data)
+
+            # Convertir OGG a WAV
+            subprocess.run(
+                ["ffmpeg", "-y", "-i", self.temp_files['ogg'], self.temp_files['wav']], 
+                check=True
+            )
+
+            # Transcribir el audio
+            return transcribe_audio_groq(self.temp_files['wav'])
+
+        except Exception as e:
+            print(f"Error procesando audio: {e}")
+            return None
+        finally:
+            self.cleanup_temp_files()
+
+    def cleanup_temp_files(self):
+        """Limpia los archivos temporales"""
+        for file_path in self.temp_files.values():
+            if os.path.exists(file_path):
+                try:
+                    os.remove(file_path)
+                except Exception as e:
+                    print(f"Error al eliminar archivo temporal {file_path}: {e}")
+
+    def handle_user_message(self, message, user_id):
+        """Procesa los mensajes del usuario y los agrega a captured_messages"""
+        if "textMessage" in message:
+            # Agregar el mensaje a la lista de mensajes capturados
+            captured_messages.append(message)
+            print(f"[x] Mensaje capturado para usuario {user_id}: {message}")
+
+    def process_message(self, ch, method, properties, body):
+        """Callback principal para procesar mensajes"""
+        try:
+            message = json.loads(body.decode())
+            print(f"[x] Mensaje recibido en {method.routing_key}: {message}")
+            
+            user_id = message.get("number")
+            if not user_id:
+                raise ValueError("Campo 'number' faltante o inválido")
+
+            # Manejar el mensaje del usuario
+            self.handle_user_message(message, user_id)
+
+            config_chat = {"configurable": {"thread_id": user_id}}
+            
+            if method.routing_key == "Mecanicos-chat":
+                user_message = message.get("textMessage")
+                if not user_message:
+                    raise ValueError("Campo 'textMessage' faltante o inválido")
+                get_response(user_message, config_chat)
+                
+            elif method.routing_key == "Mecanicos-audio":
+                transcribed_text = self.process_audio_message(message)
+                if transcribed_text:
+                    get_response(transcribed_text, config_chat)
+
+        except json.JSONDecodeError:
+            print("Error: Mensaje recibido no es JSON válido")
+        except Exception as e:
+            print(f"Error procesando mensaje: {e}")
+            if user_id:
+                error_message = f"Error al procesar el mensaje: {str(e)}"
+                send_response(
+                    json.dumps({"number": user_id, "response": error_message}),
+                    'Mecanicos-respuesta-Bot'
+                )
+
+    def start_consuming(self):
+        """Inicia el consumo de mensajes con manejo de errores"""
+        while True:
+            try:
+                if not self.connection or self.connection.is_closed:
+                    if not self.connect():
+                        continue
+
+                self.setup_queues()
+                
+                for queue in self.queues:
+                    self.channel.basic_consume(
+                        queue=queue,
+                        on_message_callback=self.process_message,
+                        auto_ack=True
+                    )
+
+                print("[*] Esperando mensajes. Presiona CTRL+C para salir")
+                self.channel.start_consuming()
+
+            except (AMQPConnectionError, AMQPChannelError) as e:
+                print(f"Error de conexión: {e}. Reintentando...")
+                time.sleep(5)
+            except KeyboardInterrupt:
+                print("Deteniendo el consumidor...")
+                if self.connection and not self.connection.is_closed:
+                    self.connection.close()
+                break
+            except Exception as e:
+                print(f"Error inesperado: {e}")
+                if self.connection and not self.connection.is_closed:
+                    self.connection.close()
+                time.sleep(5)
 
 def main():
-    while True:
-        try:
-            # Conexión con RabbitMQ con credenciales guest y host localhost
-            credentials = pika.PlainCredentials('guest', 'guest')
-            connection_params = pika.ConnectionParameters('localhost', 5672, '/', credentials)
-            connection = pika.BlockingConnection(connection_params)
-            channel = connection.channel()
-
-            # Declarar las colas Mecanicos-chat y Mecanicos-audios
-            channel.queue_declare(queue='Mecanicos-chat', durable=True)
-            channel.queue_declare(queue='Mecanicos-audios', durable=True)
-
-            # Configurar los consumidores para ambas colas
-            channel.basic_consume(queue='Mecanicos-chat', on_message_callback=on_message, auto_ack=True  )
-            channel.basic_consume(queue='Mecanicos-audios', on_message_callback=on_message, auto_ack=True  )
-
-            print(f"[*] Waiting for messages in Mecanicos-chat and Mecanicos-audios. To exit press CTRL+C")
-
-            # Iniciar el consumo de mensajes
-            channel.start_consuming()
-        except pika.exceptions.AMQPConnectionError as e:
-            print(f"Error en la conexión principal: {str(e)}. Reintentando en 5 segundos...")
-            time.sleep(5)
-        except Exception as e:
-            print(f"Error inesperado: {str(e)}")
-        finally:
-            if 'connection' in locals() and connection.is_open:
-                connection.close()
+    consumer = RabbitMQConsumer()
+    consumer.start_consuming()
 
 if __name__ == "__main__":
     captured_messages = []

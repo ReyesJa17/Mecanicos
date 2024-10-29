@@ -1,306 +1,401 @@
-// Importar las librerías necesarias
-const { makeWASocket, DisconnectReason, useMultiFileAuthState, downloadMediaMessage } = require('@whiskeysockets/baileys');
-const fs = require('fs');
-const path = require('path');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, downloadMediaMessage } = require('@whiskeysockets/baileys');
+const qrcode = require('qrcode-terminal');
+const amqp = require('amqplib'); // Cambiado a la versión Promise
+const fs = require('fs').promises;
 const ffmpeg = require('fluent-ffmpeg');
-const streamifier = require('streamifier');
-const amqp = require('amqplib/callback_api');
-const tmp = require('tmp'); // Mover esta línea aquí
+const tmp = require('tmp');
+const path = require('path');
+const P = require('pino');
 
-// Configuración de conexión a RabbitMQ
-const RABBIT_USER = 'guest';
-const RABBIT_PASSWORD = 'guest';
-const RABBIT_HOST = 'localhost';
+// Configuración
+const CONFIG = {
+    rabbit: {
+        user: 'guest',
+        password: 'guest',
+        host: 'localhost',
+        reconnectDelay: 5000,
+        maxRetries: 5
+    },
+    app: {
+        id: 'Mecanicos',
+        queueConfig: {
+            durable: true,
+            arguments: {
+                'x-message-ttl': 60000,
+                'x-max-length': 1000
+            }
+        }
+    }
+};
 
-// Función para conectarse a WhatsApp y manejar mensajes entrantes
+// Nombres de colas
+const QUEUES = {
+    outgoing: `${CONFIG.app.id}-respuesta-Bot`,
+    incomingChat: `${CONFIG.app.id}-chat`,
+    incomingAudio: `${CONFIG.app.id}-audio`,
+    media: `${CONFIG.app.id}-Tool-Media`
+};
+
+// Función principal para conectar a WhatsApp
 async function connectToWhatsApp() {
-    const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
+    try {
+        const authPath = path.join(__dirname, 'auth_info_baileys');
+        const { state, saveCreds } = await useMultiFileAuthState(authPath);
 
-    const startSocket = () => {
-        const sock = makeWASocket({
-            auth: state,
-            printQRInTerminal: true
-        });
+        const startSocket = async () => {
+            const sock = makeWASocket({
+                auth: state,
+                printQRInTerminal: true,
+                retryRequestDelayMs: 2000,
+                connectTimeoutMs: 30000,
+                maxIdleTimeMs: 60000,
+                defaultQueryTimeoutMs: 120000,
+                logger: P({ level: 'debug' })
+            });
 
-        sock.ev.on('creds.update', saveCreds);
+            sock.ev.on('creds.update', saveCreds);
+            setupConnectionHandler(sock, startSocket);
+            setupMessageHandler(sock);
 
-        sock.ev.on('connection.update', (update) => {
-            const { connection, lastDisconnect } = update;
-            if (connection === 'close') {
-                const statusCode = (lastDisconnect?.error)?.output?.statusCode;
-                const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-                console.error('Conexión cerrada:', lastDisconnect?.error);
-                if (shouldReconnect) {
-                    console.log('Intentando reconectar...');
-                    setTimeout(() => startSocket(), 5000);  // Agregar una pausa antes de intentar reconectar
-                } else {
-                    console.log('Error 401: Necesita volver a escanear el QR.');
-                }
-            } else if (connection === 'open') {
-                console.log('Conectado exitosamente a WhatsApp');
-            }
-        });
+            return sock;
+        };
 
-        sock.ev.on('messages.upsert', async ({ messages, type }) => {
-            if (type === 'notify') {
-                for (const message of messages) {
-                    if (!message.message) return;
+        const sock = await startSocket();
 
-                    let messageType = Object.keys(message.message)[0];
-                    const jid = message.key.remoteJid;
-                    const number = jid.split('@')[0]; // Extraer el número sin el sufijo
+        // Conectar a RabbitMQ usando promesas
+        const rabbitmqUrl = `amqp://${CONFIG.rabbit.user}:${CONFIG.rabbit.password}@${CONFIG.rabbit.host}`;
+        const connection = await amqp.connect(rabbitmqUrl);
+        const channel = await connection.createChannel();
 
-                    console.log(`Mensaje recibido de ${jid}:`, message.message);
+        // Configurar las colas
+        await Promise.all(
+            Object.values(QUEUES).map(queue =>
+                channel.assertQueue(queue, CONFIG.app.queueConfig)
+            )
+        );
 
-                    // Manejar mensajes según su tipo
-                    if (messageType === 'conversation' || messageType === 'extendedTextMessage') {
-                        // Enviar mensajes de texto a la cola Mecanicos-chat
-                        const text = message.message.conversation || message.message.extendedTextMessage.text;
-                        sendToRabbitMQ(number, text, 'Mecanicos-chat');
-                    } else if (['audioMessage'].includes(messageType)) {
-                        // Manejar los audios y enviarlos a la cola Mecanicos-audios
-                        await handleMediaMessage(sock, message, messageType, number);
-                    } else {
-                        console.log(`Tipo de mensaje no soportado: ${messageType}`);
-                    }
-                }
-            }
-        });
+        await setupMediaConsumer(channel, sock);
+        await setupOutgoingConsumer(channel, sock);
 
-        // Añadir esta línea para comenzar a recibir mensajes de RabbitMQ
-        receiveFromRabbitMQ(sock);
-    };
-
-    startSocket();
+        console.log('Sistema iniciado correctamente');
+    } catch (error) {
+        console.error('Error al iniciar WhatsApp:', error);
+        process.exit(1);
+    }
 }
 
-async function handleMediaMessage(sock, message, messageType, number) {
-    const mediaMessage = message.message[messageType];
+// Manejador de conexión
+function setupConnectionHandler(sock, startSocket) {
+    sock.ev.on('connection.update', async (update) => {
+        const { connection, lastDisconnect } = update;
+
+        if (connection === 'close') {
+            const statusCode = lastDisconnect?.error?.output?.statusCode;
+            const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+
+            console.error('Conexión cerrada:', lastDisconnect?.error);
+
+            if (shouldReconnect) {
+                console.log(`Reconectando en ${CONFIG.rabbit.reconnectDelay / 1000} segundos...`);
+                setTimeout(() => startSocket(), CONFIG.rabbit.reconnectDelay);
+            } else {
+                console.log('Sesión finalizada. Por favor, escanee el código QR nuevamente.');
+            }
+        } else if (connection === 'open') {
+            console.log('Conexión establecida con WhatsApp');
+        }
+    });
+}
+
+// Manejador de mensajes
+function setupMessageHandler(sock) {
+    sock.ev.on('messages.upsert', async ({ messages }) => {
+        try {
+            const validMessages = messages.filter(msg =>
+                !msg.key.fromMe &&
+                msg.key.remoteJid?.endsWith('@s.whatsapp.net')
+            );
+
+            await Promise.all(validMessages.map(msg => handleIncomingMessage(msg, sock)));
+        } catch (error) {
+            console.error('Error al procesar mensajes:', error);
+        }
+    });
+}
+
+// Procesamiento de mensajes entrantes
+async function handleIncomingMessage(msg, sock) {
+    try {
+        const numberId = msg.key.remoteJid;
+        const number = numberId.split('@')[0];
+
+        if (msg.message?.audioMessage) {
+            await handleAudioMessage(msg, number, sock);
+        } else {
+            const textMessage = extractMessageContent(msg);
+            if (textMessage) {
+                console.log(`Mensaje de texto recibido de ${number}: ${textMessage}`);
+                await sendToRabbitMQ(number, textMessage, QUEUES.incomingChat);
+            }
+        }
+    } catch (error) {
+        console.error('Error en handleIncomingMessage:', error);
+    }
+}
+
+// Procesamiento de mensajes de audio
+async function handleAudioMessage(msg, number, sock) {
+    let tempInputFile = null;
+    let tempOutputFile = null;
 
     try {
-        // Descargar el mensaje de medios
-        console.log('Intentando descargar el mensaje de audio...');
-        const stream = await downloadMediaMessage(message, 'buffer', {}, {
+        const audioStream = await downloadMediaMessage(msg, 'buffer', {}, {
             logger: sock.logger,
             reuploadRequest: sock.updateMediaMessage
         });
 
-        if (!stream || stream.length === 0) {
-            console.error('Error: La descarga del mensaje de audio devolvió un stream vacío.');
-            return;
+        if (!audioStream?.length) {
+            throw new Error('Stream de audio vacío');
         }
 
-        console.log('Audio descargado con éxito. Tamaño del buffer:', stream.length);
+        tempInputFile = tmp.fileSync({ postfix: '.opus' });
+        tempOutputFile = tmp.fileSync({ postfix: '.opus' });
 
-        // Si es un audioMessage, convertir a OGG en memoria y enviar a RabbitMQ
-        if (messageType === 'audioMessage') {
-            convertOpusToOggInMemory(stream, (oggBuffer) => {
-                if (oggBuffer && oggBuffer.length > 0) {
-                    sendToRabbitMQ(number, oggBuffer, 'Mecanicos-audios');
-                } else {
-                    console.error('Error: El buffer de audio convertido está vacío.');
-                }
-            });
-        } else {
-            console.log(`${messageType} recibido, pero sin procesamiento adicional.`);
-        }
+        await fs.writeFile(tempInputFile.name, audioStream);
+
+        await new Promise((resolve, reject) => {
+            ffmpeg(tempInputFile.name)
+                .audioFrequency(16000)
+                .audioBitrate('64k')
+                .audioChannels(1)
+                .toFormat('opus')
+                .on('error', reject)
+                .on('end', resolve)
+                .save(tempOutputFile.name);
+        });
+
+        const convertedAudio = await fs.readFile(tempOutputFile.name);
+        await sendToRabbitMQ(number, convertedAudio, QUEUES.incomingAudio, true);
+
+        console.log(`Audio procesado para ${number}`);
     } catch (error) {
-        console.error('Error al descargar el archivo:', error);
+        console.error('Error al procesar audio:', error);
+        throw error;
+    } finally {
+        tempInputFile?.removeCallback();
+        tempOutputFile?.removeCallback();
     }
 }
 
-function convertOpusToOggInMemory(opusBuffer, callback) {
-    if (!opusBuffer || opusBuffer.length === 0) {
-        console.error('Error: El buffer de audio opus está vacío antes de la conversión.');
-        return;
-    }
-
-    console.log('Iniciando la conversión de Opus a OGG. Tamaño del buffer:', opusBuffer.length);
-
-    // Crear un archivo temporal para el buffer opus
-    const tempInputFile = tmp.tmpNameSync({ postfix: '.ogg' });
-    fs.writeFileSync(tempInputFile, opusBuffer);
-    const tempOutputFile = tmp.tmpNameSync({ postfix: '.ogg' });
-
-    ffmpeg(tempInputFile)
-        .inputFormat('ogg') // Especificar el formato de entrada como OGG
-        .toFormat('opus')
-        .audioCodec('libopus')
-        .on('start', (commandLine) => {
-            console.log('Comando de ffmpeg:', commandLine);
-        })
-        .on('error', (err) => {
-            console.error('Error al convertir archivo opus a ogg:', err);
-            callback(null);
-        })
-        .on('end', () => {
-            console.log('Archivo convertido a OGG Opus y guardado en un archivo temporal.');
-
-            // Leer el archivo de salida y pasarlo como buffer a callback
-            const oggBuffer = fs.readFileSync(tempOutputFile);
-            if (oggBuffer.length > 0) {
-                console.log('Tamaño del buffer OGG:', oggBuffer.length);
-                callback(oggBuffer);
-            } else {
-                console.error('Error: No se generaron datos de salida durante la conversión.');
-                callback(null);
-            }
-
-            // Eliminar archivos temporales
-            fs.unlinkSync(tempInputFile);
-            fs.unlinkSync(tempOutputFile);
-        })
-        .save(tempOutputFile); // Guardar la salida en un archivo temporal
+// Utilidades
+function extractMessageContent(msg) {
+    return msg.message?.conversation ||
+        msg.message?.extendedTextMessage?.text ||
+        msg.message?.imageMessage?.caption ||
+        null;
 }
 
-function sendToRabbitMQ(number, userMessage, queueName) {
-    amqp.connect(`amqp://${RABBIT_USER}:${RABBIT_PASSWORD}@${RABBIT_HOST}`, (error0, connection) => {
-        if (error0) {
-            console.error('Conexión a RabbitMQ fallida:', error0.message);
-            return;
-        }
-        console.log(`Conexión exitosa al servidor RabbitMQ para enviar mensajes a la cola ${queueName}.`);
+// Consumidor de mensajes salientes
+async function setupOutgoingConsumer(channel, sock) {
+    const RETRY_DELAY = 5000; // 5 segundos
+    const MAX_RETRIES = 3;
 
-        connection.createChannel((error1, channel) => {
-            if (error1) {
-                console.error('Fallo al crear el canal:', error1.message);
-                connection.close();  // Asegúrate de cerrar la conexión si no se pudo crear el canal
-                return;
+    // Asegurarse de que solo procesamos un mensaje a la vez
+    await channel.prefetch(1);
+
+    // Configurar el consumidor
+    channel.consume(QUEUES.outgoing, async (msg) => {
+        if (!msg) return;
+
+        // Obtener o inicializar el contador de reintentos
+        const retryCount = (msg.properties.headers?.retryCount || 0);
+
+        try {
+            // Verificar el estado de la conexión
+            if (!sock.user) {
+                throw new Error('WhatsApp connection not ready');
             }
-            console.log(`Canal creado exitosamente para enviar mensajes a la cola ${queueName}.`);
 
-            // Crear el mensaje a enviar
-            let message;
-            if (queueName === 'Mecanicos-audios') {
-                if (userMessage && userMessage.length > 0) {
+            const data = JSON.parse(msg.content.toString());
+            const { number, response, audio } = data;
+
+            // Función de utilidad para reintentos de envío
+            const sendWithRetry = async (sendFn) => {
+                let lastError;
+                for (let i = 0; i < 3; i++) {
                     try {
-                        const audioBase64 = userMessage.toString('base64');
-                        if (audioBase64.length === 0) {
-                            console.error('Error: El buffer de audio está vacío después de convertirlo a base64.');
-                            return;
-                        }
-                        console.log('Contenido del audio en base64:', audioBase64.slice(0, 100), '...'); // Mostrar los primeros 100 caracteres para verificar
-                        message = JSON.stringify({ number, audio: audioBase64 });
+                        await sendFn();
+                        return true;
                     } catch (error) {
-                        console.error('Error al convertir el buffer de audio a base64:', error.message);
-                        return;
+                        lastError = error;
+                        if (i < 2) { // No esperar en el último intento
+                            await new Promise(resolve => setTimeout(resolve, 1000 * (i + 1)));
+                        }
                     }
-                } else {
-                    console.error('Error: Buffer de audio está vacío o no se ha proporcionado.');
-                    return;
                 }
-            } else if (queueName === 'Mecanicos-chat') {
-                message = JSON.stringify({ number, textMessage: userMessage });
+                throw lastError;
+            };
+
+            if (audio) {
+                const audioBuffer = Buffer.from(audio, 'base64');
+                await sendWithRetry(() => sock.sendMessage(`${number}@s.whatsapp.net`, {
+                    audio: audioBuffer,
+                    mimetype: 'audio/ogg; codecs=opus',
+                    ptt: true
+                }));
+                console.log(`Audio enviado a ${number}`);
+            } else if (response) {
+                await sendWithRetry(() => sock.sendMessage(`${number}@s.whatsapp.net`, { 
+                    text: response 
+                }));
+                console.log(`Texto enviado a ${number}: ${response}`);
             }
 
-            // Verificar el mensaje antes de enviarlo
-            if (!message) {
-                console.error('Error: No se pudo generar el mensaje a enviar.');
-                return;
-            }
+            // Si llegamos aquí, el mensaje se envió correctamente
+            channel.ack(msg);
 
-            channel.assertQueue(queueName, { durable: true });
-            channel.sendToQueue(queueName, Buffer.from(message), {}, (err, ok) => {
-                if (err) {
-                    console.error('Error al enviar mensaje a RabbitMQ:', err);
-                } else {
-                    console.log(`Mensaje enviado a RabbitMQ en la cola ${queueName}: ${message}`);
-                }
-
-                // Cerrar el canal y la conexión solo después de enviar el mensaje correctamente
-                setTimeout(() => {
-                    channel.close();
-                    connection.close();
-                    console.log('Conexión a RabbitMQ cerrada después de enviar el mensaje.');
-                }, 500);
+        } catch (error) {
+            console.error('Error en consumidor de mensajes salientes:', {
+                error: error.message,
+                retryCount,
+                messageId: msg.properties.messageId
             });
-        });
+
+            if (retryCount < MAX_RETRIES) {
+                // Republicar el mensaje con contador de reintentos incrementado
+                setTimeout(async () => {
+                    try {
+                        await channel.publish('', QUEUES.outgoing, msg.content, {
+                            persistent: true,
+                            headers: {
+                                retryCount: retryCount + 1
+                            }
+                        });
+                        // Confirmar el mensaje original después de republicarlo
+                        channel.ack(msg);
+                    } catch (pubError) {
+                        console.error('Error al republicar mensaje:', pubError);
+                        channel.nack(msg, false, true);
+                    }
+                }, RETRY_DELAY);
+            } else {
+                console.error(`Mensaje descartado después de ${MAX_RETRIES} intentos para ${msg.properties.messageId}`);
+                // Aquí podrías implementar una lógica para mover el mensaje a una cola de mensajes muertos
+                channel.ack(msg);
+            }
+        }
+    }, {
+        noAck: false
     });
+
+    console.log('Consumidor de mensajes salientes configurado exitosamente');
 }
 
-function receiveFromRabbitMQ(sock) {
-    const queueName = 'Mecanicos-respuesta-Bot';
-    const connectionString = `amqp://${RABBIT_USER}:${RABBIT_PASSWORD}@${RABBIT_HOST}`;
 
-    amqp.connect(connectionString, (error0, connection) => {
-        if (error0) {
-            console.error('Conexión a RabbitMQ fallida:', error0.message);
+
+
+// Consumidor de mensajes de media
+// Consumidor mejorado de mensajes de media con más logs
+
+async function setupMediaConsumer(channel, sock) {
+    console.log('Configurando consumidor de media...');
+    
+    channel.consume(QUEUES.media, async (msg) => {
+        if (!msg || !msg.content) {
+            console.error('ERROR: Mensaje inválido recibido');
+            if (msg) channel.nack(msg, false, false);
             return;
         }
-        console.log('Conexión exitosa al servidor RabbitMQ para recibir mensajes.');
 
-        connection.createChannel((error1, channel) => {
-            if (error1) {
-                console.error('Fallo al crear el canal:', error1.message);
-                return;
+        try {
+            // Parsear el mensaje
+            const content = msg.content.toString();
+            const parsedContent = JSON.parse(content);
+
+            // Validar campos esenciales
+            if (!parsedContent.number || !parsedContent.data || !parsedContent.data_type) {
+                throw new Error('Mensaje incompleto: faltan campos requeridos');
             }
-            console.log('Canal creado exitosamente para recibir mensajes.');
 
-            channel.assertQueue(queueName, { durable: true });
-            channel.prefetch(1); // Procesar un mensaje a la vez para reducir el riesgo de sobrecarga
+            const { number, data, data_type, appId } = parsedContent;
 
-            channel.consume(queueName, async (msg) => {
-                if (msg !== null) {
-                    try {
-                        const parsedMessage = JSON.parse(msg.content.toString());
-                        let { number, response, audio } = parsedMessage;
+            // Crear buffer desde base64
+            const mediaBuffer = Buffer.from(data, 'base64');
+            if (mediaBuffer.length === 0) {
+                throw new Error('Buffer de media vacío');
+            }
 
-                        // Validar el número y formatearlo correctamente
-                        if (number && typeof number === 'string') {
-                            if (number.includes('@')) {
-                                number = number.split('@')[0];
-                            }
+            // Preparar mensaje según el tipo
+            let whatsappMsg;
+            if (data_type === 'video') {
+                whatsappMsg = {
+                    video: mediaBuffer
+                };
+            } else if (data_type === 'image') {
+                whatsappMsg = {
+                    image: mediaBuffer
+                };
+            } else {
+                throw new Error('Tipo de media no soportado');
+            }
 
-                            const jid = `${number}@s.whatsapp.net`;
+            // Enviar mensaje
+            await sock.sendMessage(`${number}@s.whatsapp.net`, whatsappMsg);
+            console.log(`${data_type} enviado correctamente a ${number}`);
 
-                            if (response) {
-                                console.log(`Respuesta recibida para ${jid}: ${response}`);
-                                await sock.sendMessage(jid, { text: response });
-                            } else if (audio) {
-                                console.log(`Enviando audio a ${jid}`);
-                                const audioBuffer = Buffer.from(audio, 'base64');
+            // Confirmar procesamiento exitoso
+            channel.ack(msg);
 
-                                // Verificar el tamaño del archivo
-                                if (audioBuffer.length > 16 * 1024 * 1024) {
-                                    console.error('Error: El archivo de audio excede el tamaño máximo permitido por WhatsApp.');
-                                } else {
-                                    await sock.sendMessage(jid, {
-                                        audio: audioBuffer,
-                                        mimetype: 'audio/ogg; codecs=opus',
-                                        ptt: true
-                                    });
-                                }
-                            } else {
-                                console.error('Error: El mensaje recibido no contiene una respuesta ni un audio.');
-                            }
-                        } else {
-                            console.error('Error: El número recibido no es válido.');
-                        }
-
-                        // Acknowledge el mensaje después de procesarlo
-                        channel.ack(msg);
-
-                    } catch (e) {
-                        console.error('Error al parsear el mensaje:', e.message);
-                        // Si hay un error al parsear el mensaje, se rechaza sin reencolar
-                        channel.nack(msg, false, false);
-                    }
-                }
+        } catch (error) {
+            console.error('Error en procesamiento de media:', {
+                error: error.message,
+                stack: error.stack
             });
 
-            // Manejar la desconexión del canal de manera segura
-            connection.on('error', (err) => {
-                console.error('Conexión a RabbitMQ perdió la conexión:', err.message);
-                channel.close();
-                connection.close();
-            });
+            // Determinar si el error es permanente
+            const isPermanentError = [
+                'Mensaje incompleto',
+                'Buffer de media vacío',
+                'Tipo de media no soportado'
+            ].some(errMsg => error.message.includes(errMsg));
 
-            connection.on('close', () => {
-                console.log('Conexión a RabbitMQ cerrada.');
-            });
-        });
+            // Rechazar el mensaje según el tipo de error
+            channel.nack(msg, false, !isPermanentError);
+        }
     });
+
+    console.log('Consumidor de media configurado exitosamente');
 }
 
-// Iniciar la conexión a WhatsApp
-connectToWhatsApp();
+
+
+
+// Función para enviar mensajes a RabbitMQ
+async function sendToRabbitMQ(number, content, queueName, isAudio = false) {
+    const rabbitmqUrl = `amqp://${CONFIG.rabbit.user}:${CONFIG.rabbit.password}@${CONFIG.rabbit.host}`;
+    let connection;
+
+    try {
+        connection = await amqp.connect(rabbitmqUrl);
+        const channel = await connection.createChannel();
+
+        const message = isAudio
+            ? { number, audio: content.toString('base64') }
+            : { number, textMessage: content };
+
+        await channel.assertQueue(queueName, CONFIG.app.queueConfig);
+        await channel.sendToQueue(queueName, Buffer.from(JSON.stringify(message)));
+
+        console.log(`Mensaje enviado a ${queueName}`);
+    } catch (error) {
+        console.error(`Error al enviar a ${queueName}:`, error);
+        throw error;
+    } finally {
+        if (connection) {
+            setTimeout(() => connection.close(), 500);
+        }
+    }
+}
+
+// Iniciar la aplicación
+connectToWhatsApp().catch(console.error);
