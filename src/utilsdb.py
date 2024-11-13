@@ -1,346 +1,437 @@
-import sqlite3
-import os
+
 import pandas as pd
-import pika
-import time
-import json
+import logging
+from typing import Dict, Any, Optional
 
 
-#RabbitMQ 
+# En Docker, la ruta debe ser absoluta
+#db_path = '/app/database/mecanicos.db'
+
+import os
 
 
-def send_rabbitmq_request(queue_name, message):
+def initialize_database_mysql():
     """
-    Sends a message to a specified RabbitMQ queue.
-    """
-    connection = pika.BlockingConnection(pika.ConnectionParameters('localhost'))
-    channel = connection.channel()
-
-    # Declare the queue if it doesn't exist already
-    channel.queue_declare(queue=queue_name)
-
-    # Send the message
-    channel.basic_publish(exchange='', routing_key=queue_name, body=json.dumps(message))
-    print(f"Sent message to {queue_name}: {message}")
-
-    connection.close()
-
-def receive_rabbitmq_response(queue_name, timeout=30):
-    """
-    Listens for a response message on a specified RabbitMQ queue.
-    Waits for 'timeout' seconds before giving up.
-    """
-    connection = pika.BlockingConnection(pika.ConnectionParameters('localhost'))
-    channel = connection.channel()
-
-    # Declare the queue if it doesn't exist already
-    channel.queue_declare(queue=queue_name)
-
-    response = None
-
-    # Define the callback function that processes the message
-    def callback(ch, method, properties, body):
-        nonlocal response
-        response = json.loads(body)
-        ch.basic_ack(delivery_tag=method.delivery_tag)  # Acknowledge message
-
-    # Set up the consumer
-    channel.basic_consume(queue=queue_name, on_message_callback=callback, auto_ack=False)
-
-    # Wait for a response for the given timeout duration
-    timeout_end = time.time() + timeout
-    while time.time() < timeout_end and not response:
-        connection.process_data_events(time_limit=1)  # Check for messages
-
-    connection.close()
-    return response
-
-def request_user_input_via_rabbitmq(request_message, request_queue, response_queue):
-    """
-    Sends a request for user input via RabbitMQ and waits for the response.
-    Args:
-        request_message (str): The message to send to the user.
-        request_queue (str): The RabbitMQ queue to send the request to.
-        response_queue (str): The RabbitMQ queue to listen for the response.
-    Returns:
-        str: The user's input from RabbitMQ.
-    """
-    # Send the request message to RabbitMQ
-    send_rabbitmq_request(request_queue, {"request": request_message})
-
-    # Wait for the user's response
-    print(f"Waiting for user response on queue {response_queue}...")
-    response = receive_rabbitmq_response(response_queue)
-    
-    if response and 'input' in response:
-        return response['input']
-    else:
-        raise Exception("No response from user or response format invalid.")
-
-
-
-
-# Path to the SQLite database file
-db_path = 'mecanicos.db'
-
-
-#Initialize database
-def initialize_database(db_path: str):
-    """
-    Initializes the SQLite database with the provided schema.
-    Checks if the database file already exists.
-    Args:
-        db_path (str): The path to the SQLite database file.
+    Initializes the MySQL database with the provided schema.
     """
     try:
-        if os.path.exists(db_path):
-            print(f"The database '{db_path}' already exists.")
-            return
-        else:
-            # Connect to the SQLite database
-            conn = sqlite3.connect(db_path)
-            cursor = conn.cursor()
+        # Conectar al servidor MySQL y a la base de datos 'mecanicos'
+        connection = mysql.connector.connect(
+            host='db',  # Cambia según tu configuración
+            port=3306,  # Puerto de conexión
+            user='mecanicos_user',  # Usuario de MySQL definido en Docker
+            password='mecanicos_password',  # Contraseña de MySQL definida en Docker
+            database='mecanicos'  # Conectar directamente a la base de datos 'mecanicos'
+        )
 
-            # Enable foreign key support
-            cursor.execute("PRAGMA foreign_keys = ON;")
+        if connection.is_connected():
+            cursor = connection.cursor()
 
-            # SQL script to create the tables
+            # Script SQL para crear las tablas
             sql_script = """
-            -- Table: Productos
-            CREATE TABLE IF NOT EXISTS Productos (
-                ID INTEGER PRIMARY KEY NOT NULL,
-                Nombre TEXT NOT NULL,
-                Categoria TEXT NOT NULL
-            );
-            -- Table: Orden_Entrada
-            CREATE TABLE IF NOT EXISTS Orden_Entrada (
-                ID_Entrada INTEGER PRIMARY KEY,
-                ID_Encargado TEXT NOT NULL,
-                Fecha_Entrada DATE NOT NULL,
-                Status TEXT NOT NULL CHECK(Status IN ('liberada', 'proceso', 'inactiva')),
-                Fecha_Salida DATE,
-                ID_Camion TEXT,
-                Motivo_Entrada TEXT,
-                Motivo_Salida TEXT,
-                Tipo TEXT CHECK(Tipo IN ('CONSUMIBLE', 'PREVENTIVO', 'CORRECTIVO')),
-                Kilometraje_Entrada INTEGER NOT NULL
-            );
-            -- Table: Camion
-            CREATE TABLE IF NOT EXISTS Camion (
-                VIN TEXT PRIMARY KEY,
-                NumeroUnidad INTEGER NOT NULL,
-                Kilometraje INTEGER NOT NULL,
-                Marca TEXT NOT NULL,
-                Modelo TEXT NOT NULL
-            );
-            -- Table: Productos_Servicio
-            CREATE TABLE IF NOT EXISTS Productos_Servicio (
-                ID_Orden INTEGER NOT NULL,
-                ID_Producto INTEGER NOT NULL,
-                Cantidad INTEGER NOT NULL,
-                PRIMARY KEY (ID_Orden, ID_Producto),
-                FOREIGN KEY (ID_Orden) REFERENCES Orden_Entrada(ID),
-                FOREIGN KEY (ID_Producto) REFERENCES Productos(ID)
-            );
+                -- Table: Productos
+                CREATE TABLE IF NOT EXISTS Productos (
+                    ID INT PRIMARY KEY NOT NULL AUTO_INCREMENT,
+                    Nombre VARCHAR(255) NOT NULL,
+                    Categoria VARCHAR(255) NOT NULL
+                );
+
+                -- Set the starting value of AUTO_INCREMENT to 1 every time the table is recreated or modified
+                ALTER TABLE Productos AUTO_INCREMENT = 1;
+
+                -- Table: Orden_Entrada
+                CREATE TABLE IF NOT EXISTS Orden_Entrada (
+                    ID_Entrada INT PRIMARY KEY AUTO_INCREMENT,
+                    Fecha_Entrada DATE NOT NULL,
+                    Status ENUM('liberada', 'proceso', 'inactiva') NOT NULL,
+                    Fecha_Salida DATE,
+                    ID_Camion VARCHAR(255),
+                    Motivo_Entrada TEXT,
+                    Motivo_Salida TEXT,
+                    Tipo ENUM('CONSUMIBLE', 'PREVENTIVO', 'CORRECTIVO'),
+                    Kilometraje INT,
+                    Lugar ENUM('PUEBLA', 'VILLA HERMOSA', 'GUADALAJARA'),
+                    hora_registro TIME,
+                    hora_salida TIME
+                );
+
+                -- Table: Camion
+                CREATE TABLE IF NOT EXISTS Camion (
+                    VIN VARCHAR(255) PRIMARY KEY,
+                    NumeroUnidad INT NOT NULL,
+                    Kilometraje INT NOT NULL,
+                    Marca VARCHAR(255) NOT NULL,
+                    Modelo VARCHAR(255) NOT NULL
+                );
+
+                -- Table: Productos_Servicio
+                CREATE TABLE IF NOT EXISTS Productos_Servicio (
+                    ID_Orden INT NOT NULL,
+                    ID_Producto INT NOT NULL,
+                    Cantidad INT NOT NULL,
+                    PRIMARY KEY (ID_Orden, ID_Producto),
+                    FOREIGN KEY (ID_Orden) REFERENCES Orden_Entrada(ID_Entrada),
+                    FOREIGN KEY (ID_Producto) REFERENCES Productos(ID)
+                );
             """
 
-            # Execute the script
-            cursor.executescript(sql_script)
+            # Ejecutar el script SQL
+            for result in cursor.execute(sql_script, multi=True):
+                pass  # Consume el resultado para mantener la conexión sincronizada
 
-            # Commit the changes
-            conn.commit()
+            # Confirmar los cambios
+            connection.commit()
 
-            print(f"Database '{db_path}' initialized successfully!")
+            print("Database 'mecanicos' initialized successfully!")
 
-    except sqlite3.Error as e:
+    except Error as e:
         print(f"An error occurred while initializing the database: {e}")
+        raise e
 
     except Exception as ex:
         print(f"An unexpected error occurred: {ex}")
+        raise ex
 
     finally:
-        # Close the connection
-        if 'conn' in locals():
-            conn.close()
-
-
-# Usage example
-# initialize_database("your_database.db")
-
-
-
+        # Cerrar la conexión
+        if 'connection' in locals() and connection.is_connected():
+            cursor.close()
+            connection.close()
 
 
 #Camion
-
-
-def create_camion(conn, vin, numero_unidad, kilometraje, marca, modelo):
-    cursor = conn.cursor()
-    query = "INSERT INTO Camion (VIN, NumeroUnidad, Kilometraje, Marca, Modelo) VALUES (?, ?, ?, ?, ?)"
-    cursor.execute(query, (vin, numero_unidad, kilometraje, marca, modelo))
-    conn.commit()
-
-
-
-def read_camion(conn, vin):
-    cursor = conn.cursor()
-    query = "SELECT * FROM Camion WHERE VIN = ?"
-    cursor.execute(query, (vin,))
-    return cursor.fetchone()
-
-
-def update_camion(conn, vin, numero_unidad=None, kilometraje=None, marca=None, modelo=None):
-    cursor = conn.cursor()
-    fields = []
-    values = []
-
-    if numero_unidad is not None:
-        fields.append("NumeroUnidad = ?")
-        values.append(numero_unidad)
-    if kilometraje is not None:
-        fields.append("Kilometraje = ?")
-        values.append(kilometraje)
-    if marca is not None:
-        fields.append("Marca = ?")
-        values.append(marca)
-    if modelo is not None:
-        fields.append("Modelo = ?")
-        values.append(modelo)
-
-    if not fields:
-        return {"error": "No fields to update."}
-
-    values.append(vin)
-    query = f"UPDATE Camion SET {', '.join(fields)} WHERE VIN = ?"
-    cursor.execute(query, values)
-    conn.commit()
-
-    return {"message": "Camion updated successfully."}
-
-
-def delete_camion(conn, vin):
-    cursor = conn.cursor()
-    query = "DELETE FROM Camion WHERE VIN = ?"
-    cursor.execute(query, (vin,))
-    conn.commit()
-
-
-
-#Productos_Servicio
-def create_productos_servicio(conn, id_orden, id_producto, cantidad):
-    cursor = conn.cursor()
+def create_camion(connection, vin, numero_unidad, kilometraje, marca, modelo):
     try:
-        # Ensure the product exists
-        cursor.execute("SELECT ID FROM Productos WHERE ID = ?", (id_producto,))
-        if not cursor.fetchone():
-            return {"error": f"Product with ID {id_producto} does not exist."}
+        cursor = connection.cursor()
+        query = "INSERT INTO Camion (VIN, NumeroUnidad, Kilometraje, Marca, Modelo) VALUES (%s, %s, %s, %s, %s)"
+        cursor.execute(query, (vin, numero_unidad, kilometraje, marca, modelo))
+        connection.commit()
+        print("Camion created successfully!")
+    except Error as e:
+        print(f"An error occurred while creating Camion: {e}")
+        raise e
+    finally:
+        if connection.is_connected():
+            cursor.close()
 
-        # Insert into Productos_Servicio
-        query = "INSERT INTO Productos_Servicio (ID_Orden, ID_Producto, Cantidad) VALUES (?, ?, ?)"
-        cursor.execute(query, (id_orden, id_producto, cantidad))
-        conn.commit()
-        return {"message": f"Product ID {id_producto} associated with Order ID {id_orden} (Quantity used: {cantidad})."}
-    except sqlite3.IntegrityError as e:
-        return {"error": f"Failed to associate product with service: {e}"}
-    except sqlite3.Error as e:
-        return {"error": f"An error occurred: {e}"}
-
-def read_productos_servicio(conn, id_orden):
-    cursor = conn.cursor()
-    query = """
-    SELECT ps.ID_Orden, ps.ID_Producto, p.Nombre, p.Categoria, p.Cantidad
-    FROM Productos_Servicio ps
-    JOIN Productos p ON ps.ID_Producto = p.ID
-    WHERE ps.ID_Orden = ?
-    """
-    cursor.execute(query, (id_orden,))
-    return cursor.fetchall()
-
-
-def delete_productos_servicio(conn, id_orden, id_producto):
-    cursor = conn.cursor()
-    query = "DELETE FROM Productos_Servicio WHERE ID_Orden = ? AND ID_Producto = ?"
-    cursor.execute(query, (id_orden, id_producto))
-    conn.commit()
-    return {"message": "Product removed from service successfully."}
-
-def update_productos_servicio(conn, id_orden, id_producto, new_id_orden=None, new_id_producto=None):
-    cursor = conn.cursor()
-    fields = []
-    values = []
-
-    if new_id_orden is not None:
-        fields.append("ID_Orden = ?")
-        values.append(new_id_orden)
-    if new_id_producto is not None:
-        fields.append("ID_Producto = ?")
-        values.append(new_id_producto)
-
-    if not fields:
-        return {"error": "No fields to update."}
-
-    values.append(id_orden)
-    values.append(id_producto)
-    query = f"UPDATE Productos_Servicio SET {', '.join(fields)} WHERE ID_Orden = ? AND ID_Producto = ?"
-
+def read_camion(connection, vin):
     try:
+        cursor = connection.cursor()
+        query = "SELECT * FROM Camion WHERE VIN = %s"
+        cursor.execute(query, (vin,))
+        return cursor.fetchone()
+    except Error as e:
+        print(f"An error occurred while reading Camion: {e}")
+        raise e
+    finally:
+        if connection.is_connected():
+            cursor.close()
+
+
+import mysql.connector
+from mysql.connector import Error
+
+# Update Camion
+def update_camion(connection, vin, numero_unidad=None, kilometraje=None, marca=None, modelo=None):
+    try:
+        cursor = connection.cursor()
+        fields = []
+        values = []
+
+        if numero_unidad is not None:
+            fields.append("NumeroUnidad = %s")
+            values.append(numero_unidad)
+        if kilometraje is not None:
+            fields.append("Kilometraje = %s")
+            values.append(kilometraje)
+        if marca is not None:
+            fields.append("Marca = %s")
+            values.append(marca)
+        if modelo is not None:
+            fields.append("Modelo = %s")
+            values.append(modelo)
+
+        if not fields:
+            return {"error": "No fields to update."}
+
+        values.append(vin)
+        query = f"UPDATE Camion SET {', '.join(fields)} WHERE VIN = %s"
         cursor.execute(query, values)
-        conn.commit()
+        connection.commit()
+
+        return {"message": "Camion updated successfully."}
+    except Error as e:
+        print(f"An error occurred while updating Camion: {e}")
+        raise e
+    finally:
+        if connection.is_connected():
+            cursor.close()
+
+# Delete Camion
+def delete_camion(connection, vin):
+    try:
+        cursor = connection.cursor()
+        query = "DELETE FROM Camion WHERE VIN = %s"
+        cursor.execute(query, (vin,))
+        connection.commit()
+        print("Camion deleted successfully!")
+    except Error as e:
+        print(f"An error occurred while deleting Camion: {e}")
+        raise e
+    finally:
+        if connection.is_connected():
+            cursor.close()
+
+# Create Productos_Servicio
+def create_productos_servicio(connection, id_orden, id_producto, cantidad):
+    try:
+        cursor = connection.cursor()
+        # Ensure the product exists
+        cursor.execute("SELECT ID FROM Productos WHERE ID = %s", (id_producto,))
+        if not cursor.fetchone():
+            return {"error": f"El producto con ID {id_producto} no existe."}
+
+        # Check if the product is already associated with the order
+        cursor.execute("SELECT Cantidad FROM Productos_Servicio WHERE ID_Orden = %s AND ID_Producto = %s", (id_orden, id_producto))
+        existing_record = cursor.fetchone()
+        
+        if existing_record:
+            # Update the quantity if the product is already associated with the order
+            nueva_cantidad = existing_record[0] + cantidad
+            update_query = "UPDATE Productos_Servicio SET Cantidad = %s WHERE ID_Orden = %s AND ID_Producto = %s"
+            cursor.execute(update_query, (nueva_cantidad, id_orden, id_producto))
+            connection.commit()
+            return {"message": f"Cantidad del producto con ID {id_producto} actualizada en la orden ID {id_orden} (Nueva cantidad: {nueva_cantidad})."}
+        else:
+            # Insert into Productos_Servicio if not already associated
+            insert_query = "INSERT INTO Productos_Servicio (ID_Orden, ID_Producto, Cantidad) VALUES (%s, %s, %s)"
+            cursor.execute(insert_query, (id_orden, id_producto, cantidad))
+            connection.commit()
+            return {"message": f"El producto con ID {id_producto} se ha asociado con la orden ID {id_orden} (Cantidad: {cantidad})."}
+    except Error as e:
+        return {"error": f"Ocurrió un error: {e}"}
+    finally:
+        if connection.is_connected():
+            cursor.close()
+
+# Read Productos_Servicio
+def read_productos_servicio(connection, id_orden):
+    try:
+        cursor = connection.cursor()
+        query = """
+        SELECT ps.ID_Orden, ps.ID_Producto, p.Nombre, p.Categoria, ps.Cantidad
+        FROM Productos_Servicio ps
+        JOIN Productos p ON ps.ID_Producto = p.ID
+        WHERE ps.ID_Orden = %s
+        """
+        cursor.execute(query, (id_orden,))
+        results = cursor.fetchall()
+        return results
+    except Error as e:
+        print(f"An error occurred while reading Productos_Servicio: {e}")
+        raise e
+    finally:
+        if connection.is_connected():
+            cursor.close()
+
+# Delete Productos_Servicio
+def delete_productos_servicio(connection, id_orden, id_producto):
+    try:
+        cursor = connection.cursor()
+        query = "DELETE FROM Productos_Servicio WHERE ID_Orden = %s AND ID_Producto = %s"
+        cursor.execute(query, (id_orden, id_producto))
+        connection.commit()
+        return {"message": "Product removed from service successfully."}
+    except Error as e:
+        print(f"An error occurred while deleting Productos_Servicio: {e}")
+        raise e
+    finally:
+        if connection.is_connected():
+            cursor.close()
+
+# Update Productos_Servicio
+def update_productos_servicio(connection, id_orden, id_producto, new_id_orden=None, new_id_producto=None):
+    try:
+        cursor = connection.cursor()
+        fields = []
+        values = []
+
+        if new_id_orden is not None:
+            fields.append("ID_Orden = %s")
+            values.append(new_id_orden)
+        if new_id_producto is not None:
+            fields.append("ID_Producto = %s")
+            values.append(new_id_producto)
+
+        if not fields:
+            return {"error": "No fields to update."}
+
+        values.append(id_orden)
+        values.append(id_producto)
+        query = f"UPDATE Productos_Servicio SET {', '.join(fields)} WHERE ID_Orden = %s AND ID_Producto = %s"
+
+        cursor.execute(query, values)
+        connection.commit()
         return {"message": "Product-service association updated successfully."}
-    except sqlite3.IntegrityError as e:
-        return {"error": f"Failed to update Productos_Servicio: {e}"}
+    except Error as e:
+        return {"error": f"An error occurred: {e}"}
+    finally:
+        if connection.is_connected():
+            cursor.close()
 
+    
 #Orden_Entrada
+import mysql.connector
+from mysql.connector import Error, IntegrityError
+from typing import Dict, Any, Optional
+import logging
 
-def create_orden_entrada(conn, orden_id: int, id_encargado: str, fecha_entrada: str, status: str, fecha_salida: str, id_camion: str, motivo_entrada: str, motivo_salida: str, tipo: str, kilometraje_entrada: int):
+# Create Orden_Entrada
+def create_orden_entrada(
+    connection,
+    fecha_entrada: str,
+    status: str,
+    id_camion: str,
+    motivo_entrada: str,
+    tipo: str,
+    hora_registro: str,
+    lugar: str,
+    fecha_salida: Optional[str] = None,
+    kilometraje: Optional[int] = None,
+    motivo_salida: Optional[str] = None
+) -> Dict[str, Any]:
     """
-    Crea una nueva Orden_Entrada en la base de datos.
+    Creates a new 'Orden_Entrada' record in the database.
+
     Args:
-        conn: Conexión a la base de datos.
-        orden_id (int): Identificador de la orden.
-        id_encargado (str): Identificador del encargado.
-        fecha_entrada (str): Fecha de entrada en formato 'YYYY-MM-DD'.
-        status (str): Estado inicial de la orden.
-        fecha_salida (str): Fecha de salida en formato 'YYYY-MM-DD'.
-        id_camion (str): VIN del camión.
-        motivo_entrada (str): Motivo de entrada.
-        motivo_salida (str): Motivo de salida.
-        tipo (str): Tipo de mantenimiento ('CONSUMIBLE', 'PREVENTIVO', 'CORRECTIVO').
-        kilometraje_entrada (int): Kilometraje al entrar.
+        connection: Database connection.
+        fecha_entrada (str): Entry date in 'YYYY-MM-DD' format.
+        status (str): Initial status of the order. Must be one of: 'liberada', 'proceso', 'inactiva'.
+        id_camion (str): Truck VIN.
+        motivo_entrada (str): Reason for entry.
+        tipo (str): Type of maintenance ('CONSUMIBLE', 'PREVENTIVO', 'CORRECTIVO').
+        hora_registro (str): Entry time in 'HH:MM' format.
+        lugar (str): Location of the maintenance. ('PUEBLA', 'VILLA HERMOSA', 'GUADALAJARA').
+        fecha_salida (str, optional): Exit date in 'YYYY-MM-DD' format.
+        kilometraje (int, optional): Exit mileage.
+        motivo_salida (str, optional): Reason for exit.
+
     Returns:
-        dict: Mensaje de éxito o de error.
+        dict: Success message or error message.
     """
-    cursor = conn.cursor()
+    # Validate the status before attempting insertion
+    VALID_STATUS = {'liberada', 'proceso', 'inactiva'}
+    status = status.lower()  # Convert to lowercase for consistency
+
+    if status not in VALID_STATUS:
+        return {
+            "error": f"Invalid status. Must be one of: {', '.join(VALID_STATUS)}"
+        }
+
+    # Validate the type of maintenance
+    VALID_TIPOS = {'CONSUMIBLE', 'PREVENTIVO', 'CORRECTIVO'}
+    tipo = tipo.upper()  # Convert to uppercase for consistency
+
+    if tipo not in VALID_TIPOS:
+        return {
+            "error": f"Invalid type. Must be one of: {', '.join(VALID_TIPOS)}"
+        }
+
+    # Validate the place
+    VALID_LUGARES = {'PUEBLA', 'VILLA HERMOSA', 'GUADALAJARA'}
+    lugar = lugar.upper()  # Convert to uppercase for consistency
+
+    if lugar not in VALID_LUGARES:
+        return {
+            "error": f"Invalid place. Must be one of: {', '.join(VALID_LUGARES)}"
+        }
+
+    cursor = connection.cursor()
     try:
         query = """
-
-        INSERT INTO Orden_Entrada (ID_Entrada, ID_Encargado, Fecha_Entrada, Status, Fecha_Salida, ID_Camion, Motivo_Entrada, Motivo_Salida, Tipo, Kilometraje_Entrada)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO Orden_Entrada (
+            Fecha_Entrada,
+            Status,
+            Fecha_Salida,
+            ID_Camion,
+            Motivo_Entrada,
+            Motivo_Salida,
+            Tipo,
+            Kilometraje,
+            Lugar,
+            Hora_Registro
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """
-        cursor.execute(query, (orden_id, id_encargado, fecha_entrada, status, fecha_salida, id_camion, motivo_entrada, motivo_salida, tipo, kilometraje_entrada))
-        conn.commit()
-        return {"message": f"La orden de entrada con ID {orden_id} ha sido creada exitosamente."}
 
-    except sqlite3.Error as e:
-        return {"error": f"Ocurrió un error al crear la orden de entrada: {e}"}
+        values = (
+            fecha_entrada,
+            status,
+            fecha_salida,
+            id_camion,
+            motivo_entrada,
+            motivo_salida,
+            tipo,
+            kilometraje,
+            lugar,
+            hora_registro
+        )
 
+        logging.debug(f"Executing query with values: {values}")
+        cursor.execute(query, values)
+        connection.commit()
 
-def salida_orden_entrada(conn, orden_id: int, fecha_salida: str, status: str, motivo_salida: str):
+        return {
+            "message": "The entry order has been successfully created.",
+            "status": status,
+            "tipo": tipo
+        }
+
+    except IntegrityError as e:
+        logging.error(f"Integrity error creating Orden_Entrada: {e}")
+        connection.rollback()
+        return {
+            "error": f"An integrity error occurred while creating the order: {str(e)}",
+            "details": {
+                "status_provided": status,
+                "tipo_provided": tipo,
+                "lugar_provided": lugar
+            }
+        }
+    except Error as e:
+        logging.error(f"Error creating Orden_Entrada: {e}")
+        connection.rollback()
+        return {
+            "error": f"An error occurred while creating the order: {str(e)}",
+            "details": {
+                "status_provided": status,
+                "tipo_provided": tipo,
+                "lugar_provided": lugar
+            }
+        }
+    finally:
+        cursor.close()
+
+# Salida Orden_Entrada
+def salida_orden_entrada(conn, orden_id: int, fecha_salida: str, status: str, motivo_salida: str, kilometraje: int, hora_salida: str):
     """
-    Actualiza la 'fecha_salida', 'status' y 'motivo_salida' de una Orden_Entrada existente.
+    Actualiza 'fecha_salida', 'status' y 'motivo_salida' de una orden existente en Orden_Entrada.
+    
     Args:
         conn: Conexión a la base de datos.
         orden_id (int): ID de la orden a actualizar.
         fecha_salida (str): Fecha de salida en formato 'YYYY-MM-DD'.
-        status (str): Nuevo estado de la orden (debe ser 'liberada' o similar).
-        motivo_salida (str): Motivo de salida.
+        status (str): Nuevo estado de la orden.
+        motivo_salida (str): Motivo de la salida.
+        kilometraje (int): Kilometraje al salir.
+        hora_salida (str): Hora de salida en formato 'HH:MM'.
+    
     Returns:
-        dict: Mensaje de éxito o de error.
+        dict: Mensaje de éxito o error.
     """
     cursor = conn.cursor()
     try:
         # Verificar si la orden existe
-        cursor.execute("SELECT * FROM Orden_Entrada WHERE ID = ?", (orden_id,))
+        cursor.execute("SELECT * FROM Orden_Entrada WHERE ID_Entrada = %s", (orden_id,))
         orden = cursor.fetchone()
         if not orden:
             return {"error": f"No se encontró una orden con ID {orden_id}."}
@@ -348,512 +439,376 @@ def salida_orden_entrada(conn, orden_id: int, fecha_salida: str, status: str, mo
         # Actualizar la orden con los nuevos datos
         query = """
         UPDATE Orden_Entrada
-        SET Fecha_Salida = ?, Status = ?, Motivo_Salida = ?
-        WHERE ID = ?
+        SET Fecha_Salida = %s,
+            Status = %s,
+            Motivo_Salida = %s,
+            Kilometraje = %s,
+            Hora_Salida = %s
+        WHERE ID_Entrada = %s
         """
-        cursor.execute(query, (fecha_salida, status, motivo_salida, orden_id))
+        cursor.execute(query, (
+            fecha_salida,   # Fecha_Salida
+            status,         # Status
+            motivo_salida,  # Motivo_Salida
+            kilometraje,    # Kilometraje
+            hora_salida,    # Hora_Salida
+            orden_id        # WHERE ID_Entrada
+        ))
         conn.commit()
-        return {"message": f"La orden con ID {orden_id} ha sido actualizada con fecha de salida y motivo de salida."}
-    except sqlite3.Error as e:
+        return {"message": f"La orden con ID {orden_id} ha sido actualizada con éxito."}
+    except Exception as e:
+        conn.rollback()  # Revertir cambios en caso de error
         return {"error": f"Ocurrió un error al actualizar la orden: {e}"}
+    finally:
+        cursor.close()
 
 
+# Read Orden_Entrada
+def read_orden_entrada(connection, orden_id):
+    cursor = connection.cursor()
+    try:
+        query = "SELECT * FROM Orden_Entrada WHERE ID_Entrada = %s"
+        logging.debug(f"Executing query: {query} with orden_id={orden_id}")
+        cursor.execute(query, (orden_id,))
+        result = cursor.fetchone()
+        return result
+    except Error as e:
+        logging.error(f"Error reading Orden_Entrada: {e}")
+        raise e
+    finally:
+        cursor.close()
 
-def read_orden_entrada(conn, orden_id):
-    cursor = conn.cursor()
-    query = "SELECT * FROM Orden_Entrada WHERE ID_Entrada = ?"
-    cursor.execute(query, (orden_id,))
-    return cursor.fetchone()
+# Update Orden_Entrada
+def update_orden_entrada(connection, orden_id, fecha_entrada=None, status=None, fecha_salida=None, id_camion=None, motivo_entrada=None, motivo_salida=None, tipo=None, kilometraje=None):
+    cursor = connection.cursor()
+    try:
+        # Update only the fields that are provided
+        fields = []
+        values = []
 
-def update_orden_entrada(conn, orden_id, id_encargado=None, fecha_entrada=None, status=None, fecha_salida=None, id_camion=None, motivo_entrada=None, motivo_salida=None, tipo=None, kilometraje_entrada=None):
-    cursor = conn.cursor()
+        if fecha_entrada is not None:
+            fields.append("Fecha_Entrada = %s")
+            values.append(fecha_entrada)
+        if status is not None:
+            fields.append("Status = %s")
+            values.append(status)
+        if fecha_salida is not None:
+            fields.append("Fecha_Salida = %s")
+            values.append(fecha_salida)
+        if id_camion is not None:
+            fields.append("ID_Camion = %s")
+            values.append(id_camion)
+        if motivo_entrada is not None:
+            fields.append("Motivo_Entrada = %s")
+            values.append(motivo_entrada)
+        if motivo_salida is not None:
+            fields.append("Motivo_Salida = %s")
+            values.append(motivo_salida)
+        if tipo is not None:
+            fields.append("Tipo = %s")
+            values.append(tipo)
+        if kilometraje is not None:
+            fields.append("Kilometraje = %s")
+            values.append(kilometraje)
 
-    # Update only the fields that are provided
-    fields = []
-    values = []
+        if not fields:
+            return {"error": "No fields to update."}
 
-    if id_encargado is not None:
-        fields.append("ID_Encargado = ?")
-        values.append(id_encargado)
-    if fecha_entrada is not None:
-        fields.append("Fecha_Entrada = ?")
-        values.append(fecha_entrada)
-    if status is not None:
-        fields.append("Status = ?")
-        values.append(status)
-    if fecha_salida is not None:
-        fields.append("Fecha_Salida = ?")
-        values.append(fecha_salida)
-    if id_camion is not None:
-        fields.append("ID_Camion = ?")
-        values.append(id_camion)
-    if motivo_entrada is not None:
-        fields.append("Motivo_Entrada = ?")
-        values.append(motivo_entrada)
-    if motivo_salida is not None:
-        fields.append("Motivo_Salida = ?")
-        values.append(motivo_salida)
-    if tipo is not None:
-        fields.append("Tipo = ?")
-        values.append(tipo)
-    if kilometraje_entrada is not None:
-        fields.append("Kilometraje_Entrada = ?")
-        values.append(kilometraje_entrada)
+        values.append(orden_id)
+        query = f"UPDATE Orden_Entrada SET {', '.join(fields)} WHERE ID_Entrada = %s"
+        cursor.execute(query, values)
+        connection.commit()
+        return {"message": "Orden_Entrada updated successfully."}
+    except Error as e:
+        return {"error": f"An error occurred while updating the order: {e}"}
+    finally:
+        cursor.close()
 
-    if not fields:
-        return {"error": "No fields to update."}
+# Delete Orden_Entrada
+def delete_orden_entrada(connection, orden_id):
+    cursor = connection.cursor()
+    try:
+        # Check if the record exists
+        query_check = "SELECT * FROM Orden_Entrada WHERE ID_Entrada = %s"
+        cursor.execute(query_check, (orden_id,))
+        record = cursor.fetchone()
 
-    values.append(orden_id)
-    query = f"UPDATE Orden_Entrada SET {', '.join(fields)} WHERE ID = ?"
-    cursor.execute(query, values)
-    conn.commit()
+        if not record:
+            return {"message": f"No record found with ID: {orden_id}"}
 
-    return {"message": "Orden_Entrada updated successfully."}
+        # Delete the record
+        query_delete = "DELETE FROM Orden_Entrada WHERE ID_Entrada = %s"
+        cursor.execute(query_delete, (orden_id,))
+        connection.commit()
 
-
-def delete_orden_entrada(conn, orden_id):
-    cursor = conn.cursor()
-
-    # Check if the record exists
-    query_check = "SELECT * FROM Orden_Entrada WHERE ID = ?"
-    cursor.execute(query_check, (orden_id,))
-    record = cursor.fetchone()
-
-    if not record:
-        return {"message": f"No record found with ID: {orden_id}"}
-
-    # Delete the record
-    query_delete = "DELETE FROM Orden_Entrada WHERE ID = ?"
-    cursor.execute(query_delete, (orden_id,))
-    conn.commit()
-
-    return {"message": f"Orden_Entrada with ID: {orden_id} deleted successfully."}
-
+        return {"message": f"Orden_Entrada with ID: {orden_id} deleted successfully."}
+    except Error as e:
+        return {"error": f"An error occurred while deleting the order: {e}"}
+    finally:
+        cursor.close()
 
 #Producto
-def create_producto(conn, nombre, cantidad, categoria):
-    cursor = conn.cursor()
-    query = "INSERT INTO Productos (Nombre, Cantidad, Categoria) VALUES (?, ?, ?)"
-    cursor.execute(query, (nombre, cantidad, categoria))
-    conn.commit()
+import mysql.connector
+from mysql.connector import Error, IntegrityError
+import logging
+from typing import Dict, Any, Optional
 
-
-def read_producto(conn, producto_id):
-    cursor = conn.cursor()
-    query = "SELECT * FROM Productos WHERE ID = ?"
-    cursor.execute(query, (producto_id,))
-    return cursor.fetchone()
-
-
-def update_producto(conn, producto_id, nombre=None, cantidad=None, categoria=None):
-    cursor = conn.cursor()
-    fields = []
-    values = []
-
-    if nombre is not None:
-        fields.append("Nombre = ?")
-        values.append(nombre)
-    if cantidad is not None:
-        fields.append("Cantidad = ?")
-        values.append(cantidad)
-    if categoria is not None:
-        fields.append("Categoria = ?")
-        values.append(categoria)
-
-    if not fields:
-        return {"error": "No fields to update."}
-
-    values.append(producto_id)
-    query = f"UPDATE Productos SET {', '.join(fields)} WHERE ID = ?"
-    cursor.execute(query, values)
-    conn.commit()
-
-    return {"message": "Producto updated successfully."}
-
-def delete_producto(conn, producto_id):
-    cursor = conn.cursor()
-    query = "DELETE FROM Productos WHERE ID = ?"
-    cursor.execute(query, (producto_id,))
-    conn.commit()
-
-
-#ORDEN ENTRADA WITH PRODUCTS AND CAMION
-
-def create_order_with_products(conn, orden_id, id_encargado, fecha_entrada, status, id_camion, motivo_entrada, tipo, kilometraje_entrada):
+# Create Producto
+def create_producto(connection, nombre: str, cantidad: int, categoria: str):
+    cursor = connection.cursor()
     try:
-        cursor = conn.cursor()
+        query = "INSERT INTO Productos (Nombre, Categoria) VALUES (%s, %s)"
+        cursor.execute(query, (nombre, categoria))
+        connection.commit()
+        producto_id = cursor.lastrowid
+        return {"message": "Producto created successfully.", "producto_id": producto_id}
+    except Error as e:
+        logging.error(f"An error occurred while creating Producto: {e}")
+        return {"error": f"An error occurred while creating Producto: {e}"}
+    finally:
+        cursor.close()
 
-        # Check if the Camion exists
-        cursor.execute("SELECT VIN FROM Camion WHERE VIN = ?", (id_camion,))
-        camion = cursor.fetchone()
-
-        if not camion:
-            print(f"El camión con el VIN '{id_camion}' no se ha registrado")
-            
-            # Request user input for Camion details via RabbitMQ
-            print("Solicitando datos requeridos para la creación del camión...")
-
-            numero_unidad = request_user_input_via_rabbitmq(
-                "Por favor, proporciona el Número de Unidad:", 
-                "input_request_queue", "input_response_queue"
-            )
-            kilometraje = request_user_input_via_rabbitmq(
-                "Por favor, proporciona el Kilometraje:", 
-                "input_request_queue", "input_response_queue"
-            )
-            marca = request_user_input_via_rabbitmq(
-                "Por favor, proporciona la Marca:", 
-                "input_request_queue", "input_response_queue"
-            )
-            modelo = request_user_input_via_rabbitmq(
-                "Por favor, proporciona el Modelo:", 
-                "input_request_queue", "input_response_queue"
-            )
-
-            # Convert Numero Unidad and Kilometraje to appropriate types
-            try:
-                numero_unidad = int(numero_unidad)
-                kilometraje = float(kilometraje)
-            except ValueError:
-                return {"error": "Entrada inválida para Número de Unidad o Kilometraje."}
-
-            # Create the new Camion
-            create_camion(conn, id_camion, numero_unidad, kilometraje, marca, modelo)
-            print(f"Camión con VIN '{id_camion}' ha sido creado.")
-
-        if not orden_id:
-            orden_id = request_user_input_via_rabbitmq(
-                "Por favor, proporciona un ID de orden válido:", 
-                "input_request_queue", "input_response_queue"
-            )
-        
-        fecha_salida = fecha_entrada
-        motivo_salida = motivo_entrada
-
-        # Create the Orden_Entrada
-        result = create_orden_entrada(
-            conn, orden_id, id_encargado, fecha_entrada, status, fecha_salida, 
-            id_camion, motivo_entrada, motivo_salida, tipo, kilometraje_entrada
-        )
-        print(result)
-
-        # Request user input for product details via RabbitMQ
-        print("Solicitando detalles de productos usados en el servicio...")
-
-        while True:
-            product_input = request_user_input_via_rabbitmq(
-                "Ingresa el ID del producto (o 'finish' para terminar):", 
-                "input_request_queue", "input_response_queue"
-            )
-            if product_input.lower() == 'finish':
-                break
-            try:
-                id_producto = int(product_input)
-
-                # Validate that the product exists
-                cursor.execute("SELECT ID, Nombre, Categoria FROM Productos WHERE ID = ?", (id_producto,))
-                product = cursor.fetchone()
-                if not product:
-                    print(f"El producto con ID {id_producto} no existe.")
-                    continue
-
-                product_name = product[1]
-                product_category = product[2]
-
-                # Request quantity via RabbitMQ
-                cantidad = request_user_input_via_rabbitmq(
-                    f"Selecciona la cantidad para '{product_name}' (Categoría: {product_category}):", 
-                    "input_request_queue", "input_response_queue"
-                )
-                try:
-                    cantidad = int(cantidad)
-                    if cantidad <= 0:
-                        print("La cantidad debe ser un entero positivo.")
-                        continue
-                except ValueError:
-                    print("Cantidad inválida.")
-                    continue
-
-                # Associate the product with the order via its ID
-                result = create_productos_servicio(conn, orden_id, id_producto, cantidad)
-                if 'error' in result:
-                    print(result['error'])
-                else:
-                    print(result['message'])
-            except ValueError:
-                print("ID de producto inválido.")
-
-        # Verification steps (printing table data) go here
-
-        return {"message": f"La orden con ID {orden_id} ha sido creada exitosamente con los productos asociados."}
-
-    except Exception as e:
-        return {"error": f"Ocurrió un error: {e}"}
-
-
-def create_order_with_products_console(conn, orden_id, id_encargado, fecha_entrada, status, id_camion, motivo_entrada, tipo, kilometraje_entrada):
-    """
-    Creates a new Orden_Entrada, adds a Camion if it doesn't exist, and associates products with the order.
-    After creation, verifies and prints the contents of relevant tables.
-    Args:
-        conn: Database connection.
-        orden_id (int): ID of the order.
-        id_encargado (str): Identifier of the encargado (manager).
-        fecha_entrada (str): Entry date in 'YYYY-MM-DD' format.
-        status (str): Status of the order ('liberada', 'proceso', 'inactiva').
-        id_camion (str): VIN of the truck.
-        motivo_entrada (str): Motivo de entrada.
-        tipo (str): Tipo de mantenimiento ('CONSUMIBLE', 'PREVENTIVO', 'CORRECTIVO').
-        kilometraje_entrada (int): Mileage upon entry.
-    Returns:
-        dict: A message indicating success or an error.
-    """
+# Read Producto
+def read_producto(connection, producto_id: int):
+    cursor = connection.cursor()
     try:
-        cursor = conn.cursor()
+        query = "SELECT * FROM Productos WHERE ID = %s"
+        cursor.execute(query, (producto_id,))
+        return cursor.fetchone()
+    except Error as e:
+        logging.error(f"An error occurred while reading Producto: {e}")
+        raise e
+    finally:
+        cursor.close()
 
-        # Check if the Camion exists
-        cursor.execute("SELECT VIN FROM Camion WHERE VIN = ?", (id_camion,))
-        camion = cursor.fetchone()
+# Update Producto
+def update_producto(connection, producto_id: int, nombre: Optional[str]=None, cantidad: Optional[int]=None, categoria: Optional[str]=None):
+    cursor = connection.cursor()
+    try:
+        fields = []
+        values = []
 
-        if not camion:
-            print(f"El camión con el VIN '{id_camion}' no se ha registrado")
-            # Prompt user to enter Camion details
-            print("Por favor proporciona los datos requeridos para su creación:")
-            numero_unidad = input("Número de Unidad: ")
-            kilometraje = input("Kilometraje: ")
-            marca = input("Marca: ")
-            modelo = input("Modelo: ")
+        if nombre is not None:
+            fields.append("Nombre = %s")
+            values.append(nombre)
+        if cantidad is not None:
+            fields.append("Cantidad = %s")
+            values.append(cantidad)
+        if categoria is not None:
+            fields.append("Categoria = %s")
+            values.append(categoria)
 
-            # Convert Numero Unidad and Kilometraje to appropriate types
-            try:
-                numero_unidad = int(numero_unidad)
-                kilometraje = float(kilometraje)
-            except ValueError:
-                return {"error": "Entrada inválida para Número de Unidad o Kilometraje."}
+        if not fields:
+            return {"error": "No fields to update."}
 
-            # Create the new Camion
-            create_camion(conn, id_camion, numero_unidad, kilometraje, marca, modelo)
-            print(f"Camión con VIN '{id_camion}' ha sido creado.")
+        values.append(producto_id)
+        query = f"UPDATE Productos SET {', '.join(fields)} WHERE ID = %s"
+        cursor.execute(query, values)
+        connection.commit()
 
-        if not orden_id:
-            print("Por favor, proporciona un ID de orden válido.")
-            orden_id = input("ID de Orden: ")
-        fecha_salida = fecha_entrada
-        motivo_salida = motivo_entrada
-        # Create the Orden_Entrada
-        result = create_orden_entrada(conn, orden_id, id_encargado, fecha_entrada, status, fecha_salida, id_camion, motivo_entrada, motivo_salida, tipo, kilometraje_entrada)
+        return {"message": "Producto updated successfully."}
+    except Error as e:
+        logging.error(f"An error occurred while updating Producto: {e}")
+        return {"error": f"An error occurred while updating Producto: {e}"}
+    finally:
+        cursor.close()
 
-        print(result)
+# Delete Producto
+def delete_producto(connection, producto_id: int):
+    cursor = connection.cursor()
+    try:
+        query = "DELETE FROM Productos WHERE ID = %s"
+        cursor.execute(query, (producto_id,))
+        connection.commit()
+        return {"message": "Producto deleted successfully."}
+    except Error as e:
+        logging.error(f"An error occurred while deleting Producto: {e}")
+        return {"error": f"An error occurred while deleting Producto: {e}"}
+    finally:
+        cursor.close()
+
+# Add Products for Order
+def add_products_for_order(conn, orden_id: int, product_details):
+    """
+    Agrega productos a una orden en la base de datos, validando cada producto y cantidad.
     
-        print("Por favor proporciona los ID de los productos usados en el servicio.")
-        print("Ingresa 'finish' cuando hayas terminado.")
+    Args:
+        conn: Conexión a la base de datos.
+        orden_id (int): ID de la orden a la que se agregan los productos.
+        product_details (list): Lista de diccionarios con detalles de productos (id_producto y cantidad).
+    
+    Returns:
+        list: Mensajes de éxito o error para cada producto.
+    """
+    cursor = conn.cursor()
+    messages = []
+    try:
+        for product_detail in product_details:
+            id_producto = product_detail.get('id_producto')
+            cantidad = product_detail.get('cantidad')
 
-        while True:
-            product_input = input("Ingresa el ID del producto (o 'finish' para terminar): ")
-            if product_input.lower() == 'finish':
-                break
+            if id_producto is None or cantidad is None:
+                messages.append({"error": "Faltan detalles del producto (ID o cantidad)."})
+                continue
+
             try:
-                id_producto = int(product_input)
+                id_producto = int(id_producto)
+                cantidad = int(cantidad)
 
-                # Validate that the product exists
-                cursor.execute("SELECT ID, Nombre, Categoria FROM Productos WHERE ID = ?", (id_producto,))
+                # Verificar que el producto existe
+                cursor.execute("SELECT ID, Nombre, Categoria FROM Productos WHERE ID = %s", (id_producto,))
                 product = cursor.fetchone()
                 if not product:
-                    print(f"El producto con ID {id_producto} no existe. Por favor, ingresa un ID de producto válido.")
+                    messages.append({"error": f"El producto con ID {id_producto} no existe."})
                     continue
 
-                product_name = product[1]
-                product_category = product[2]
-
-                # Prompt for quantity
-                cantidad_input = input(f"Selecciona la cantidad para '{product_name}' (Categoría: {product_category}): ")
-                try:
-                    cantidad = int(cantidad_input)
-                    if cantidad <= 0:
-                        print("La cantidad debe ser un entero positivo.")
-                        continue
-                except ValueError:
-                    print("Cantidad inválida.")
+                if cantidad <= 0:
+                    messages.append({"error": "La cantidad debe ser un entero positivo."})
                     continue
 
-                # Associate the product with the order via its ID
+                # Asociar el producto con la orden mediante su ID
                 result = create_productos_servicio(conn, orden_id, id_producto, cantidad)
                 if 'error' in result:
-                    print(result['error'])
+                    messages.append(result)
                 else:
-                    print(result['message'])
+                    messages.append({"success": f"Producto {product[1]} (ID: {id_producto}) agregado correctamente a la orden {orden_id}."})
             except ValueError:
-                print("ID de producto inválido. Por favor, ingresa un entero válido.")
-
-        # Verification: Print contents of relevant tables
-        print("\n--- Verificación de datos en las tablas ---")
-        # Fetch and print Camion table contents
-        print("\nTabla 'Camion':")
-        cursor.execute("SELECT * FROM Camion WHERE VIN = ?", (id_camion,))
-        camiones = cursor.fetchall()
-        for camion in camiones:
-            print(camion)
-        # Fetch and print Orden_Entrada table contents
-        print("\nTabla 'Orden_Entrada':")
-        cursor.execute("SELECT * FROM Orden_Entrada WHERE ID_Entrada = ?", (orden_id,))
-        ordenes = cursor.fetchall()
-        for orden in ordenes:
-            print(orden)
-        # Fetch and print Productos_Servicio table contents
-        print("\nTabla 'Productos_Servicio':")
-        cursor.execute("SELECT * FROM Productos_Servicio WHERE ID_Orden = ?", (orden_id,))
-        productos_servicio = cursor.fetchall()
-        for ps in productos_servicio:
-            print(ps)
-        # Fetch and print Productos table contents for associated products
-        print("\nProductos asociados en la tabla 'Productos':")
-        cursor.execute("""
-            SELECT p.* FROM Productos p
-            INNER JOIN Productos_Servicio ps ON p.ID = ps.ID_Producto
-            WHERE ps.ID_Orden = ?
-        """, (orden_id,))
-        productos = cursor.fetchall()
-        for producto in productos:
-            print(producto)
-        return {"message": f"La orden con ID {orden_id} ha sido creada exitosamente con los productos asociados."}
-
-    except sqlite3.Error as e:
-        return {"error": f"Ocurrió un error: {e}"}
-
+                messages.append({"error": "ID de producto o cantidad inválidos."})
+    except Exception as e:
+        conn.rollback()  # Revertir cambios en caso de error global
+        messages.append({"error": f"Ocurrió un error al agregar productos a la orden: {e}"})
+    finally:
+        cursor.close()
+    return messages
 
 
 #Create Products
-def add_categories_and_products(conn, categories_and_products):
+
+import mysql.connector
+from mysql.connector import Error
+import logging
+from typing import Dict, Any, Optional
+
+# Clear Productos table
+def clear_productos_table(connection):
+    """Deletes all records from the Productos table."""
+    cursor = connection.cursor()
+    try:
+        cursor.execute("DELETE FROM Productos")
+        connection.commit()
+        print("All records deleted from Productos table.")
+    except Error as e:
+        print(f"An error occurred while clearing Productos table: {e}")
+    finally:
+        cursor.close()
+
+# Add categories and products
+def add_categories_and_products(connection, categories_and_products):
     """
-    Adds categories and their associated products to the Productos table with predefined IDs.
-    Adds categories and their associated products to the Productos table with unique IDs.
+    Adds categories and their associated products to the Productos table.
     Args:
-        conn: Database connection.
+        connection: Database connection.
         categories_and_products (list): List of dictionaries with 'category' and 'products' keys.
     """
-    cursor = conn.cursor()
+    cursor = connection.cursor()
     try:
-        product_id = 1  # Start ID from 1
-        # Get the current maximum ID from Productos table
-        cursor.execute("SELECT COALESCE(MAX(ID), 0) FROM Productos")
-        product_id = cursor.fetchone()[0] + 1  # Start from the next available ID
+        # Eliminar todos los registros de Productos y reiniciar el AUTO_INCREMENT
+        cursor.execute("DELETE FROM Productos;")
+        cursor.execute("ALTER TABLE Productos AUTO_INCREMENT = 1;")
+
         for category_data in categories_and_products:
             category = category_data['category']
             products = category_data['products']
             for product_name in products:
                 # Clean up product name (strip whitespace)
                 product_name = product_name.strip()
-                # Insert product into Productos table with predefined ID
-                query = "INSERT INTO Productos (ID, Nombre, Categoria) VALUES (?, ?, ?)"
-                cursor.execute(query, (product_id, product_name, category))
-                product_id += 1  # Increment ID for next product
-                product_id += 1  # Increment ID for the next product
-        conn.commit()
-        print("Categories and products added successfully with predefined IDs.")
-    except sqlite3.Error as e:
+                # Insert product into Productos table without predefined ID
+                query = "INSERT INTO Productos (Nombre, Categoria) VALUES (%s, %s)"
+                cursor.execute(query, (product_name, category))
+        
+        connection.commit()
+        print("Categories and products added successfully.")
+    except Error as e:
         print(f"An error occurred while adding categories and products: {e}")
+    finally:
+        cursor.close()
 
-
-#Information queries
-
-def get_products_used_in_order(conn, id_orden):
+# Information queries
+def get_products_used_in_order(connection, id_orden):
     """
     Recupera y devuelve una lista de productos utilizados en una orden específica en formato de texto legible.
     Args:
-        conn: Conexión a la base de datos.
+        connection: Conexión a la base de datos.
         id_orden (int): ID de la orden.
     Returns:
         str: Una cadena de texto con los productos utilizados o un mensaje indicando que no se encontraron productos.
     """
-    cursor = conn.cursor()
-    query = """
-    SELECT p.Nombre, p.Categoria, ps.Cantidad
-    FROM Productos_Servicio ps
-    JOIN Productos p ON ps.ID_Producto = p.ID
-    WHERE ps.ID_Orden = ?
-    """
-    cursor.execute(query, (id_orden,))
-    results = cursor.fetchall()
+    cursor = connection.cursor()
+    try:
+        query = """
+        SELECT p.Nombre, p.Categoria, ps.Cantidad
+        FROM Productos_Servicio ps
+        JOIN Productos p ON ps.ID_Producto = p.ID
+        WHERE ps.ID_Orden = %s
+        """
+        cursor.execute(query, (id_orden,))
+        results = cursor.fetchall()
 
-    if not results:
-        return f"No se encontraron productos para la orden con ID {id_orden}."
+        if not results:
+            return f"No se encontraron productos para la orden con ID {id_orden}."
 
-    response = f"Productos utilizados en la orden {id_orden}:\n"
-    for nombre, categoria, cantidad in results:
-        response += f"- {nombre} (Categoría: {categoria}), Cantidad: {cantidad}\n"
-    return response
+        response = f"Productos utilizados en la orden {id_orden}:\n"
+        for nombre, categoria, cantidad in results:
+            response += f"- {nombre} (Categoría: {categoria}), Cantidad: {cantidad}\n"
+        return response
+    except Error as e:
+        print(f"An error occurred while retrieving products used in order: {e}")
+        return f"Ocurrió un error: {e}"
+    finally:
+        cursor.close()
 
-
-
-def get_products_used_in_month(conn, year: int, month: int):
+def get_products_used_in_month(connection, year: int, month: int):
     """
     Recupera todos los productos utilizados y sus cantidades en todas las órdenes durante un mes específico, y los devuelve en un formato de texto legible.
     Args:
-        conn: Conexión a la base de datos.
+        connection: Conexión a la base de datos.
         year (int): Año de interés.
         month (int): Mes de interés (1-12).
     Returns:
         str: Una cadena de texto con los productos utilizados o un mensaje indicando que no se encontraron productos.
     """
-    cursor = conn.cursor()
-    query = """
-    SELECT p.Nombre, p.Categoria, SUM(ps.Cantidad) as TotalCantidad
-    FROM Productos_Servicio ps
-    JOIN Productos p ON ps.ID_Producto = p.ID
-    JOIN Orden_Entrada oe ON ps.ID_Entrada = oe.ID
-    WHERE strftime('%Y', oe.Fecha_Entrada) = ? AND strftime('%m', oe.Fecha_Entrada) = ?
-    GROUP BY p.ID
-    ORDER BY TotalCantidad DESC
-    """
-    cursor.execute(query, (str(year), f"{month:02d}"))
-    results = cursor.fetchall()
+    cursor = connection.cursor()
+    try:
+        query = """
+        SELECT p.Nombre, p.Categoria, SUM(ps.Cantidad) as TotalCantidad
+        FROM Productos_Servicio ps
+        JOIN Productos p ON ps.ID_Producto = p.ID
+        JOIN Orden_Entrada oe ON ps.ID_Orden = oe.ID_Entrada
+        WHERE YEAR(oe.Fecha_Entrada) = %s AND MONTH(oe.Fecha_Entrada) = %s
+        GROUP BY p.ID
+        ORDER BY TotalCantidad DESC
+        """
+        cursor.execute(query, (year, month))
+        results = cursor.fetchall()
 
-    if not results:
-        return f"No se encontraron productos utilizados en {month}/{year}."
+        if not results:
+            return f"No se encontraron productos utilizados en {month}/{year}."
 
-    response = f"Productos utilizados en {month}/{year}:\n"
-    for nombre, categoria, total_cantidad in results:
-        response += f"- {nombre} (Categoría: {categoria}), Cantidad total: {total_cantidad}\n"
-    return response
+        response = f"Productos utilizados en {month}/{year}:\n"
+        for nombre, categoria, total_cantidad in results:
+            response += f"- {nombre} (Categoría: {categoria}), Cantidad total: {total_cantidad}\n"
+        return response
+    except Error as e:
+        print(f"An error occurred while retrieving products used in month: {e}")
+        return f"Ocurrió un error: {e}"
+    finally:
+        cursor.close()
 
-
-def get_products_used_in_month(conn, year: int, month: int):
-    """
-    Recupera todos los productos utilizados y sus cantidades en todas las órdenes durante un mes específico, y los devuelve en un formato de texto legible.
-    Args:
-        conn: Conexión a la base de datos.
-        year (int): Año de interés.
-        month (int): Mes de interés (1-12).
-    Returns:
-        str: Una cadena de texto con los productos utilizados o un mensaje indicando que no se encontraron productos.
-    """
-    cursor = conn.cursor()
-    query = """
-    SELECT p.Nombre, p.Categoria, SUM(ps.Cantidad) as TotalCantidad
-    FROM Productos_Servicio ps
-    JOIN Productos p ON ps.ID_Producto = p.ID
-    JOIN Orden_Entrada oe ON ps.ID_Orden = oe.ID
-    WHERE strftime('%Y', oe.Fecha_Entrada) = ? AND strftime('%m', oe.Fecha_Entrada) = ?
-    GROUP BY p.ID
-    ORDER BY TotalCantidad DESC
-    """
-    cursor.execute(query, (str(year), f"{month:02d}"))
-    results = cursor.fetchall()
-
-    if not results:
-        return f"No se encontraron productos utilizados en {month}/{year}."
-
-    response = f"Productos utilizados en {month}/{year}:\n"
-    for nombre, categoria, total_cantidad in results:
-        response += f"- {nombre} (Categoría: {categoria}), Cantidad total: {total_cantidad}\n"
-    return response
-
-
-def get_product_usage_for_truck(conn, vin: str, product_id: int, start_date: str, end_date: str):
+def get_product_usage_for_truck(connection, vin: str, product_id: int, start_date: str, end_date: str):
     """
     Recupera la cantidad total de un producto específico utilizado en un camión determinado dentro de un rango de fechas, y la devuelve en formato de texto legible.
     Args:
-        conn: Conexión a la base de datos.
+        connection: Conexión a la base de datos.
         vin (str): VIN del camión.
         product_id (int): ID del producto.
         start_date (str): Fecha de inicio en formato 'YYYY-MM-DD'.
@@ -861,189 +816,272 @@ def get_product_usage_for_truck(conn, vin: str, product_id: int, start_date: str
     Returns:
         str: Una cadena de texto con la cantidad total utilizada o un mensaje indicando que no se encontró uso del producto.
     """
-    cursor = conn.cursor()
-    query = """
-    SELECT p.Nombre, p.Categoria, SUM(ps.Cantidad) as TotalCantidad
-    FROM Productos_Servicio ps
-    JOIN Orden_Entrada oe ON ps.ID_Entrada = oe.ID
-    JOIN Productos p ON ps.ID_Producto = p.ID
-    WHERE oe.ID_Camion = ? AND ps.ID_Producto = ?
-      AND oe.Fecha_Entrada BETWEEN ? AND ?
-    """
-    cursor.execute(query, (vin, product_id, start_date, end_date))
-    result = cursor.fetchone()
+    cursor = connection.cursor()
+    try:
+        query = """
+        SELECT p.Nombre, p.Categoria, SUM(ps.Cantidad) as TotalCantidad
+        FROM Productos_Servicio ps
+        JOIN Orden_Entrada oe ON ps.ID_Orden = oe.ID_Entrada
+        JOIN Productos p ON ps.ID_Producto = p.ID
+        WHERE oe.ID_Camion = %s AND ps.ID_Producto = %s
+          AND oe.Fecha_Entrada BETWEEN %s AND %s
+        GROUP BY p.ID
+        """
+        cursor.execute(query, (vin, product_id, start_date, end_date))
+        result = cursor.fetchone()
 
-    if result and result[2]:
-        nombre = result[0]
-        categoria = result[1]
-        total_cantidad = result[2]
-        return (f"El producto '{nombre}' (Categoría: {categoria}) se utilizó {total_cantidad} "
-                f"veces para el camión con VIN {vin} entre {start_date} y {end_date}.")
-    else:
-        return (f"No se encontró uso del producto con ID {product_id} para el camión con VIN {vin} "
-                f"entre {start_date} y {end_date}.")
+        if result and result[2]:
+            nombre = result[0]
+            categoria = result[1]
+            total_cantidad = result[2]
+            return (f"El producto '{nombre}' (Categoría: {categoria}) se utilizó {total_cantidad} "
+                    f"veces para el camión con VIN {vin} entre {start_date} y {end_date}.")
+        else:
+            return (f"No se encontró uso del producto con ID {product_id} para el camión con VIN {vin} "
+                    f"entre {start_date} y {end_date}.")
+    except Error as e:
+        print(f"An error occurred while retrieving product usage for truck: {e}")
+        return f"Ocurrió un error: {e}"
+    finally:
+        cursor.close()
 
-
-
-def get_products_used_for_truck(conn, vin: str):
+def get_products_used_for_truck(connection, vin: str):
     """
     Recupera todos los productos utilizados y sus cantidades para un camión específico, y los devuelve en un formato de texto legible.
     Args:
-        conn: Conexión a la base de datos.
+        connection: Conexión a la base de datos.
         vin (str): VIN del camión.
     Returns:
         str: Una cadena de texto con los productos utilizados o un mensaje indicando que no se encontraron productos.
     """
-    cursor = conn.cursor()
-    query = """
-    SELECT p.Nombre, p.Categoria, SUM(ps.Cantidad) as TotalCantidad
-    FROM Productos_Servicio ps
-    JOIN Productos p ON ps.ID_Producto = p.ID
-    JOIN Orden_Entrada oe ON ps.ID_Entrada = oe.ID
-    WHERE oe.ID_Camion = ?
-    GROUP BY p.ID
-    ORDER BY TotalCantidad DESC
-    """
-    cursor.execute(query, (vin,))
-    results = cursor.fetchall()
+    cursor = connection.cursor()
+    try:
+        query = """
+        SELECT p.Nombre, p.Categoria, SUM(ps.Cantidad) as TotalCantidad
+        FROM Productos_Servicio ps
+        JOIN Productos p ON ps.ID_Producto = p.ID
+        JOIN Orden_Entrada oe ON ps.ID_Orden = oe.ID_Entrada
+        WHERE oe.ID_Camion = %s
+        GROUP BY p.ID
+        ORDER BY TotalCantidad DESC
+        """
+        cursor.execute(query, (vin,))
+        results = cursor.fetchall()
 
-    if not results:
-        return f"No se encontraron productos utilizados para el camión con VIN {vin}."
+        if not results:
+            return f"No se encontraron productos utilizados para el camión con VIN {vin}."
 
-    response = f"Productos utilizados para el camión con VIN {vin}:\n"
-    for nombre, categoria, total_cantidad in results:
-        response += f"- {nombre} (Categoría: {categoria}), Cantidad total: {total_cantidad}\n"
-    return response
+        response = f"Productos utilizados para el camión con VIN {vin}:\n"
+        for nombre, categoria, total_cantidad in results:
+            response += f"- {nombre} (Categoría: {categoria}), Cantidad total: {total_cantidad}\n"
+        return response
+    except Error as e:
+        print(f"An error occurred while retrieving products used for truck: {e}")
+        return f"Ocurrió un error: {e}"
+    finally:
+        cursor.close()
 
-
-def get_order_count_for_branch(conn, sucursal: str):
+def get_order_count_for_branch(connection, sucursal: str):
     """
     Recupera el número de órdenes para una sucursal específica y lo devuelve en formato de texto legible.
     Args:
-        conn: Conexión a la base de datos.
+        connection: Conexión a la base de datos.
         sucursal (str): Nombre o identificador de la sucursal.
     Returns:
         str: Una cadena de texto con el número de órdenes o un mensaje indicando que no se encontraron órdenes.
     """
-    cursor = conn.cursor()
-    query = """
-    SELECT COUNT(*) as OrderCount
-    FROM Orden_Entrada
-    WHERE Sucursal = ?
-    """
-    cursor.execute(query, (sucursal,))
-    result = cursor.fetchone()
-    count = result[0] if result else 0
+    cursor = connection.cursor()
+    try:
+        query = """
+        SELECT COUNT(*) as OrderCount
+        FROM Orden_Entrada
+        WHERE Lugar = %s
+        """
+        cursor.execute(query, (sucursal,))
+        result = cursor.fetchone()
+        count = result[0] if result else 0
 
-    if count > 0:
-        return f"La sucursal '{sucursal}' ha procesado {count} órdenes."
-    else:
-        return f"No se encontraron órdenes para la sucursal '{sucursal}'."
+        if count > 0:
+            return f"La sucursal '{sucursal}' ha procesado {count} órdenes."
+        else:
+            return f"No se encontraron órdenes para la sucursal '{sucursal}'."
+    except Error as e:
+        print(f"An error occurred while retrieving order count for branch: {e}")
+        return f"Ocurrió un error: {e}"
+    finally:
+        cursor.close()
 
-
-def get_order_details_for_truck(conn, vin: str):
+def get_order_details_for_truck(connection, vin: str):
     """
     Recupera las órdenes, motivos y fechas para un camión específico y las devuelve en un formato de texto legible.
     Args:
-        conn: Conexión a la base de datos.
+        connection: Conexión a la base de datos.
         vin (str): VIN del camión.
     Returns:
         str: Una cadena de texto con los detalles de las órdenes o un mensaje indicando que no se encontraron órdenes.
     """
-    cursor = conn.cursor()
-    query = """
-    SELECT ID, Motivo, Fecha_Entrada
-    FROM Orden_Entrada
-    WHERE ID_Camion = ?
-    ORDER BY Fecha_Entrada DESC
-    """
-    cursor.execute(query, (vin,))
-    orders = cursor.fetchall()
+    cursor = connection.cursor()
+    try:
+        query = """
+        SELECT ID_Entrada, Motivo_Entrada, Fecha_Entrada
+        FROM Orden_Entrada
+        WHERE ID_Camion = %s
+        ORDER BY Fecha_Entrada DESC
+        """
+        cursor.execute(query, (vin,))
+        orders = cursor.fetchall()
 
-    if not orders:
-        return f"No se encontraron órdenes para el camión con VIN {vin}."
+        if not orders:
+            return f"No se encontraron órdenes para el camión con VIN {vin}."
 
-    response = f"Órdenes para el camión con VIN {vin}:\n"
-    for order_id, motivo, fecha_entrada in orders:
-        response += f"- Orden ID: {order_id}, Motivo: {motivo}, Fecha de Entrada: {fecha_entrada}\n"
-    return response
+        response = f"Órdenes para el camión con VIN {vin}:\n"
+        for orden_id, motivo, fecha_entrada in orders:
+            response += f"- Orden ID: {orden_id}, Motivo: {motivo}, Fecha de Entrada: {fecha_entrada}\n"
+        return response
+    except Error as e:
+        print(f"An error occurred while retrieving order details for truck: {e}")
+        return f"Ocurrió un error: {e}"
+    finally:
+        cursor.close()
+
 
 #Excel Table
 
-def export_orders_to_excel(db_path: str, excel_path: str):
+import pandas as pd
+from openpyxl import Workbook
+from openpyxl.utils.dataframe import dataframe_to_rows
+from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+from openpyxl.worksheet.dimensions import ColumnDimension
+
+def export_orders_to_excel(connection, excel_path: str):
     """
-    Exporta campos específicos de la base de datos a un archivo de Excel utilizando pandas.
-    Crea el archivo y su directorio si no existen.
+    Exports specific fields from the database to an Excel file with separate sheets for each 'Lugar'.
+    Creates the file and its directory if they do not exist.
+
     Args:
-        db_path (str): Ruta al archivo de la base de datos SQLite.
-        excel_path (str): Ruta donde se guardará el archivo de Excel.
-    
+        connection: MySQL database connection.
+        excel_path (str): Path where the Excel file will be saved.
+
     Returns:
         None
     """
     try:
-        # Verificar si la base de datos existe
-        if not os.path.exists(db_path):
-            print(f"La base de datos en '{db_path}' no existe.")
-            return
-
-        # Asegurarse de que el directorio del archivo Excel exista
+        # Ensure that the directory for the Excel file exists
         directory = os.path.dirname(excel_path)
         if directory and not os.path.exists(directory):
             os.makedirs(directory, exist_ok=True)
-            print(f"Directorio '{directory}' creado para almacenar el archivo Excel.")
+            print(f"Directory '{directory}' created to store the Excel file.")
 
-        # Conectar a la base de datos
-        conn = sqlite3.connect(db_path)
+        # Fetch distinct values of Lugar
+        cursor = connection.cursor()
+        cursor.execute("SELECT DISTINCT Lugar FROM Orden_Entrada")
+        distinct_places = [row[0] for row in cursor.fetchall()]
+        cursor.close()
 
-        # Definir la consulta SQL con los joins necesarios
-        query = """
-        SELECT 
-            c.Marca AS MARCA,
-            c.Modelo AS MODELO,
-            c.VIN AS VIN,
-            c.NumeroUnidad AS NUMERO_UNIDAD,
-            oe.Fecha_Entrada AS FECHA_ENTRADA_ORDEN,
-            oe.ID_Entrada AS ID_ORDEN_ENTRADA,
-            oe.Tipo AS TIPO_MANTENIMIENTO,
-            oe.Status AS STATUS,
-            p.Categoria AS CATEGORIA_PRODUCTOS,
-            c.Kilometraje AS KILOMETRAJE,
-            oe.Fecha_Salida AS FECHA_SALIDA_ORDEN
-        FROM Orden_Entrada oe
-        JOIN Camion c ON oe.ID_Camion = c.VIN
-        JOIN Productos_Servicio ps ON oe.ID_Entrada = ps.ID_Orden
-        JOIN Productos p ON ps.ID_Producto = p.ID
-        ORDER BY oe.Fecha_Entrada DESC
-        """
+        # Create an Excel workbook
+        wb = Workbook()
+        # Remove the default sheet created automatically
+        default_sheet = wb.active
+        wb.remove(default_sheet)
 
-        # Ejecutar la consulta y cargar los datos en un DataFrame de pandas
-        df = pd.read_sql_query(query, conn)
+        for place in distinct_places:
+            # Define the SQL query to filter by Lugar
+            query = """
+            SELECT 
+                oe.ID_Entrada AS `ID Orden`,
+                DATE_FORMAT(oe.Fecha_Entrada, '%%d/%%m/%%Y') AS `Fecha de Entrada`,
+                c.VIN AS `VIN`,
+                c.Modelo AS `Modelo`,
+                c.Marca AS `Marca`,
+                oe.Motivo_Entrada AS `Motivo de Entrada`,
+                oe.Tipo AS `Tipo de Mantenimiento`,
+                oe.Status AS `Estado`,
+                GROUP_CONCAT(DISTINCT p.Categoria SEPARATOR ', ') AS `Categorías`,
+                GROUP_CONCAT(CONCAT(IFNULL(p.Nombre, 'Sin productos'), ' x', IFNULL(ps.Cantidad, ''))) AS `Productos y Cantidades`,
+                IFNULL(c.Kilometraje, 0) AS `Kilometraje`,
+                oe.Motivo_Salida AS `Motivo de Salida`,
+                IFNULL(DATE_FORMAT(oe.Fecha_Salida, '%%d/%%m/%%Y'), 'Pendiente') AS `Fecha de Salida`
+            FROM Orden_Entrada oe
+            LEFT JOIN Camion c ON oe.ID_Camion = c.VIN
+            LEFT JOIN Productos_Servicio ps ON oe.ID_Entrada = ps.ID_Orden
+            LEFT JOIN Productos p ON ps.ID_Producto = p.ID
+            WHERE oe.Lugar = %s
+            GROUP BY oe.ID_Entrada
+            ORDER BY oe.Fecha_Entrada DESC;
+            """
 
-        # Cerrar la conexión a la base de datos
-        conn.close()
+            # Execute the query and load the data into a pandas DataFrame
+            df = pd.read_sql(query, connection, params=(place,))
 
-        # Verificar si el DataFrame está vacío
-        if df.empty:
-            print("No se encontraron datos para exportar.")
-            return
+            # Verify if the DataFrame is empty
+            if df.empty:
+                print(f"No data found for Lugar '{place}' to export.")
+                continue
 
-        # Exportar el DataFrame a un archivo de Excel
-        df.to_excel(excel_path, index=False)
+            # Create a new sheet for each 'Lugar'
+            ws = wb.create_sheet(title=place[:31])  # Excel sheet names must be 31 characters or fewer
 
-        print(f"Datos exportados exitosamente a '{excel_path}'.")
+            # Add a title to the worksheet
+            ws.merge_cells('A1:M1')
+            title_cell = ws['A1']
+            title_cell.value = f"Ordenes de Entrada - {place}"
+            title_cell.font = Font(size=14, bold=True, color="FFFFFF")
+            title_cell.fill = PatternFill(start_color="000080", end_color="000080", fill_type="solid")
+            title_cell.alignment = Alignment(horizontal="center", vertical="center")
 
-    except sqlite3.Error as e:
-        print(f"Error al conectar o consultar la base de datos: {e}")
+            # Append the DataFrame to the worksheet
+            for r_idx, row in enumerate(dataframe_to_rows(df, index=False, header=True), 2):
+                ws.append(row)
+
+            # Set styles for the header row
+            header_font = Font(bold=True, color="FFFFFF")
+            header_fill = PatternFill(start_color="000080", end_color="000080", fill_type="solid")
+            header_alignment = Alignment(horizontal="center", vertical="center")
+            border_style = Border(left=Side(style='thin', color='000000'),
+                                  right=Side(style='thin', color='000000'),
+                                  top=Side(style='thin', color='000000'),
+                                  bottom=Side(style='thin', color='000000'))
+
+            for cell in ws[2]:
+                cell.font = header_font
+                cell.fill = header_fill
+                cell.alignment = header_alignment
+                cell.border = border_style
+
+            # Set styles for data rows
+            alternate_fill_1 = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
+            alternate_fill_2 = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
+
+            for row_idx, row in enumerate(ws.iter_rows(min_row=3, max_row=ws.max_row, max_col=ws.max_column), 3):
+                fill = alternate_fill_1 if row_idx % 2 == 0 else alternate_fill_2
+                for cell in row:
+                    cell.alignment = Alignment(horizontal="left")
+                    cell.fill = fill
+                    cell.border = border_style
+
+            # Adjust column widths
+            for col_idx, column_cells in enumerate(ws.iter_cols(min_row=2, max_row=ws.max_row, max_col=ws.max_column), 1):
+                length = max(len(str(cell.value)) for cell in column_cells if cell.value is not None)
+                ws.column_dimensions[ws.cell(row=2, column=col_idx).column_letter].width = length + 2
+
+        # Save the Excel file
+        wb.save(excel_path)
+
+        print(f"Data successfully exported to '{excel_path}'.")
+
+    except Error as e:
+        print(f"Error connecting to or querying the database: {e}")
 
     except Exception as ex:
-        print(f"Ocurrió un error inesperado: {ex}")
+        print(f"An unexpected error occurred: {ex}")
+
+
+
 
 
 #Informnation
-
 mechanics_operation = """
-The mechanic shop operates by receiving trucks that require various types of maintenance services. When a truck arrives at one of the shop's branches, the process begins with the manager creating an entrance order. This order is a critical document that captures all the essential information needed to service the truck effectively.
+The mechanic shop Kinich operates by receiving trucks that require various types of maintenance services. When a truck arrives at one of the shop's branches, the process begins with the manager creating an entrance order. This order is a critical document that captures all the essential information needed to service the truck effectively.
 To facilitate this process, a suite of specialized tools has been incorporated into the shop's system. These tools streamline the creation and management of entrance orders, truck records, and product usage, ensuring that all data is accurately recorded and easily accessible.
 Tools and Their Descriptions:
 Create Camion Tool:
@@ -1058,8 +1096,8 @@ Use Case: Used to update the truck's information in the database when changes oc
 Delete Camion Tool:
 Requirements: Truck's VIN.
 Use Case: Removes a truck from the system, for example, if it is no longer in service or was entered incorrectly.
-Create Order with Products Tool:
-Requirements: Order ID, Manager's ID, entry date, status, truck's VIN, maintenance reason,type of maintenance, entry mileage.
+Create Order :
+Requirements:  entry date, status, truck's VIN, maintenance reason,type of maintenance, branch location.
 Use Case: Used by the manager to create an entrance order when a truck arrives for service. This tool captures all essential order details and interactively queries the user to associate products and consumables used during the service.
 Read Orden Entrada Tool:
 Requirements: Order ID.
@@ -1130,7 +1168,6 @@ Enhanced Customer Satisfaction: Ensures transparency and accountability througho
 Guidelines for Assistance:
 Data Collection: Always gather all required information before proceeding with any operation.
 Data Validation: Ensure the accuracy of the provided data.
-Persistence in Searching: If initial searches yield no results, expand your search parameters before concluding.
 Maintain Data Integrity: Follow the mechanic shop's procedures and ensure data consistency.
 Communication: Provide clear and precise responses to support efficient workshop management.
 Language Preference: Always respond in Spanish.
@@ -1305,16 +1342,119 @@ categories_and_products = [
 ]
 
 
-#Create database
+import sqlite3
+from reportlab.lib.pagesizes import letter
+from reportlab.lib import colors
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.units import inch
 
-initialize_database('mecanicos.db')
+def eliminar_duplicados(connection):
+    cursor = connection.cursor()
+    try:
+        delete_query = """
+        DELETE p1 FROM Productos p1
+        INNER JOIN Productos p2 
+        WHERE 
+            p1.ID > p2.ID AND 
+            p1.Nombre = p2.Nombre AND 
+            p1.Categoria = p2.Categoria
+        """
+        cursor.execute(delete_query)
+        connection.commit()
+        print("Duplicated records deleted from Productos table.")
+    except Error as e:
+        print(f"An error occurred while deleting duplicates: {e}")
+    finally:
+        cursor.close()
 
-conn = sqlite3.connect(db_path)
+def listar_productos_pdf(connection, output_pdf):
+    try:
+        cursor = connection.cursor()
+        # Modificamos la consulta para no seleccionar el ID de la base de datos
+        query = "SELECT Nombre, Categoria FROM Productos"
+        cursor.execute(query)
+        productos = cursor.fetchall()
 
-# Add categories and products
-add_categories_and_products(conn, categories_and_products)
+        # Configuración del PDF con márgenes de 1 cm
+        margin_size = 28.35  # 1 cm en puntos
+        doc = SimpleDocTemplate(output_pdf, pagesize=letter,
+                                rightMargin=margin_size, leftMargin=margin_size,
+                                topMargin=margin_size, bottomMargin=margin_size)
+        elements = []
+
+        # Estilo de título
+        styles = getSampleStyleSheet()
+        title_style = styles['Title']
+        title_style.fontSize = 24
+        title_style.leading = 28
+        title_style.textColor = colors.black
+
+        # Añadir el título en la primera página
+        title = Paragraph("Lista de Productos y Servicios Kinich Multiservicios", title_style)
+        elements.append(title)
+        elements.append(Spacer(1, 20))  # Espacio entre título y tabla
+
+        # Encabezado de la tabla
+        data = [["#", "Nombre", "Categoría"]]  # Cambiamos 'ID' por '#' para numeración secuencial
+
+        # Añadir productos a la data de la tabla con numeración secuencial
+        for idx, producto in enumerate(productos, start=1):
+            data.append([idx, producto[0], producto[1]])
+
+        # Crear la tabla
+        table = Table(data, colWidths=[1 * inch, 2.5 * inch, 2.5 * inch])
+
+        # Aplicar estilos a la tabla
+        style = TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.grey),  # Fondo gris para cabecera
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),  # Texto blanco para cabecera
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, 0), 12),
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 10),
+            ('BACKGROUND', (0, 1), (-1, -1), colors.beige),  # Fondo beige para filas
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.black),  # Borde de celda
+        ])
+        table.setStyle(style)
+
+        # Añadir la tabla al documento
+        elements.append(table)
+
+        # Generar el PDF
+        doc.build(elements)
+        print(f"PDF generado con éxito en '{output_pdf}'.")
+
+    except Error as e:
+        print("Error al listar productos:", e)
+    finally:
+        cursor.close()
 
 
-# Close the connection
-conn.close()
 
+
+# Crear la base de datos y las tablas
+initialize_database_mysql()
+
+# Conectar a la base de datos MySQL
+connection = mysql.connector.connect(
+    host='db',  # Cambia si es necesario
+    user='mecanicos_user',  # Reemplaza con tu usuario de MySQL
+    password='mecanicos_password',  # Reemplaza con tu contraseña de MySQL
+    database='mecanicos'
+)
+
+# Limpia la tabla antes de insertar datos
+clear_productos_table(connection)
+
+# Añadir categorías y productos
+add_categories_and_products(connection, categories_and_products)
+
+# Eliminar duplicados antes de generar el PDF
+eliminar_duplicados(connection)
+
+# Opcional: listar productos en PDF
+#listar_productos_pdf(connection, "productos_lista.pdf")
+
+# Cerrar la conexión
+connection.close()

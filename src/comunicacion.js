@@ -7,27 +7,26 @@ const tmp = require('tmp');
 const path = require('path');
 const P = require('pino');
 
-// Configuración
 const CONFIG = {
     rabbit: {
-        user: 'guest',
-        password: 'guest',
-        host: 'localhost',
+        user: process.env.RABBIT_USER || 'guest',
+        password: process.env.RABBIT_PASSWORD || 'guest',
+        host: process.env.RABBITMQ_HOST || 'localhost',
         reconnectDelay: 5000,
-        maxRetries: 5
+        maxRetries: 5,
+        heartbeat: 60
     },
     app: {
         id: 'Mecanicos',
         queueConfig: {
             durable: true,
             arguments: {
-                'x-message-ttl': 60000,
+                'x-message-ttl': 60000, // Volvemos al valor original de 60000
                 'x-max-length': 1000
             }
         }
     }
 };
-
 // Nombres de colas
 const QUEUES = {
     outgoing: `${CONFIG.app.id}-respuesta-Bot`,
@@ -36,7 +35,9 @@ const QUEUES = {
     media: `${CONFIG.app.id}-Tool-Media`
 };
 
-// Función principal para conectar a WhatsApp
+
+
+// Función principal mejorada para conectar a WhatsApp
 async function connectToWhatsApp() {
     try {
         const authPath = path.join(__dirname, 'auth_info_baileys');
@@ -47,10 +48,12 @@ async function connectToWhatsApp() {
                 auth: state,
                 printQRInTerminal: true,
                 retryRequestDelayMs: 2000,
-                connectTimeoutMs: 30000,
+                connectTimeoutMs: 60000,
                 maxIdleTimeMs: 60000,
                 defaultQueryTimeoutMs: 120000,
-                logger: P({ level: 'debug' })
+                logger: P({ level: 'warn' }), // Reducido a warn para menos ruido
+                browser: ['WhatsApp Service', 'Chrome', '4.0.0'],
+                keepAliveIntervalMs: 30000,
             });
 
             sock.ev.on('creds.update', saveCreds);
@@ -62,47 +65,83 @@ async function connectToWhatsApp() {
 
         const sock = await startSocket();
 
-        // Conectar a RabbitMQ usando promesas
+        // Conectar a RabbitMQ con mejoras
         const rabbitmqUrl = `amqp://${CONFIG.rabbit.user}:${CONFIG.rabbit.password}@${CONFIG.rabbit.host}`;
-        const connection = await amqp.connect(rabbitmqUrl);
+        const connection = await amqp.connect(rabbitmqUrl, {
+            heartbeat: CONFIG.rabbit.heartbeat
+        });
+        
+        connection.on('error', async (error) => {
+            console.error('Error en conexión RabbitMQ:', error);
+            // Intentar reconectar
+            setTimeout(connectToWhatsApp, CONFIG.rabbit.reconnectDelay);
+        });
+
         const channel = await connection.createChannel();
 
-        // Configurar las colas
-        await Promise.all(
-            Object.values(QUEUES).map(queue =>
-                channel.assertQueue(queue, CONFIG.app.queueConfig)
-            )
-        );
+        // Configurar las colas con manejo de errores
+        for (const queue of Object.values(QUEUES)) {
+            try {
+                await channel.assertQueue(queue, CONFIG.app.queueConfig);
+            } catch (error) {
+                console.error(`Error al configurar cola ${queue}:`, error);
+                // Continuar con las siguientes colas
+            }
+        }
 
         await setupMediaConsumer(channel, sock);
         await setupOutgoingConsumer(channel, sock);
 
         console.log('Sistema iniciado correctamente');
+        
+        // Manejo de errores no capturados
+        process.on('uncaughtException', (error) => {
+            console.error('Error no capturado:', error);
+            // Continuar ejecutando
+        });
+
+        process.on('unhandledRejection', (reason, promise) => {
+            console.error('Rechazo no manejado:', reason);
+            // Continuar ejecutando
+        });
+
     } catch (error) {
         console.error('Error al iniciar WhatsApp:', error);
-        process.exit(1);
+        // Reintentar conexión
+        setTimeout(connectToWhatsApp, CONFIG.rabbit.reconnectDelay);
     }
 }
 
-// Manejador de conexión
+
+// Manejador de conexión mejorado
 function setupConnectionHandler(sock, startSocket) {
+    let reconnectAttempts = 0;
+    const MAX_RECONNECT_ATTEMPTS = 10;
+
     sock.ev.on('connection.update', async (update) => {
+        console.log('Actualización de conexión:', update);
         const { connection, lastDisconnect } = update;
 
         if (connection === 'close') {
-            const statusCode = lastDisconnect?.error?.output?.statusCode;
-            const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+            const statusCode = lastDisconnect?.error?.output?.statusCode || lastDisconnect?.error?.output?.payload?.statusCode;
 
             console.error('Conexión cerrada:', lastDisconnect?.error);
 
-            if (shouldReconnect) {
-                console.log(`Reconectando en ${CONFIG.rabbit.reconnectDelay / 1000} segundos...`);
-                setTimeout(() => startSocket(), CONFIG.rabbit.reconnectDelay);
+            const shouldReconnect = statusCode !== DisconnectReason.loggedOut && statusCode !== DisconnectReason.connectionReplaced;
+
+            if (shouldReconnect && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+                reconnectAttempts++;
+                console.log(`Reconectando (intento ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})...`);
+                setTimeout(() => startSocket(), CONFIG.rabbit.reconnectDelay * Math.min(reconnectAttempts, 5));
+            } else if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+                console.error('Máximo de intentos de reconexión alcanzado');
+                // Puedes decidir si reiniciar la aplicación o no
             } else {
-                console.log('Sesión finalizada. Por favor, escanee el código QR nuevamente.');
+                console.log('Desconectado por conflicto o cierre de sesión. No se intentará reconectar.');
             }
         } else if (connection === 'open') {
             console.log('Conexión establecida con WhatsApp');
+            reconnectAttempts = 0; // Resetear contador
         }
     });
 }
@@ -116,9 +155,17 @@ function setupMessageHandler(sock) {
                 msg.key.remoteJid?.endsWith('@s.whatsapp.net')
             );
 
-            await Promise.all(validMessages.map(msg => handleIncomingMessage(msg, sock)));
+            for (const msg of validMessages) {
+                try {
+                    await handleIncomingMessage(msg, sock);
+                } catch (error) {
+                    console.error('Error al procesar mensaje:', error);
+                    // Continuar con el siguiente mensaje
+                }
+            }
         } catch (error) {
             console.error('Error al procesar mensajes:', error);
+            // Continuar ejecutando
         }
     });
 }
@@ -194,49 +241,89 @@ function extractMessageContent(msg) {
         msg.message?.imageMessage?.caption ||
         null;
 }
-
-// Consumidor de mensajes salientes
 async function setupOutgoingConsumer(channel, sock) {
-    const RETRY_DELAY = 5000; // 5 segundos
-    const MAX_RETRIES = 3;
+    const RETRY_DELAY = 5000;
+    const MAX_RETRIES = 5;
 
-    // Asegurarse de que solo procesamos un mensaje a la vez
     await channel.prefetch(1);
 
-    // Configurar el consumidor
     channel.consume(QUEUES.outgoing, async (msg) => {
         if (!msg) return;
 
-        // Obtener o inicializar el contador de reintentos
         const retryCount = (msg.properties.headers?.retryCount || 0);
 
         try {
-            // Verificar el estado de la conexión
-            if (!sock.user) {
-                throw new Error('WhatsApp connection not ready');
+            if (!sock?.user) {
+                console.warn("Conexión a WhatsApp no lista. Reintentando en 5 segundos.");
+                setTimeout(() => channel.nack(msg, false, true), RETRY_DELAY);
+                return;
             }
 
             const data = JSON.parse(msg.content.toString());
             const { number, response, audio } = data;
 
-            // Función de utilidad para reintentos de envío
-            const sendWithRetry = async (sendFn) => {
-                let lastError;
-                for (let i = 0; i < 3; i++) {
-                    try {
-                        await sendFn();
-                        return true;
-                    } catch (error) {
-                        lastError = error;
-                        if (i < 2) { // No esperar en el último intento
-                            await new Promise(resolve => setTimeout(resolve, 1000 * (i + 1)));
-                        }
-                    }
+            // En sendWithRetry, añadir comprobación de conexión
+    const sendWithRetry = async (sendFn) => {
+        let lastError;
+        for (let i = 0; i < MAX_RETRIES; i++) {
+            try {
+                if (!sock?.user) {
+                    console.warn("Conexión a WhatsApp no lista. Esperando 5 segundos...");
+                    await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
+                    continue; // Intentar de nuevo
                 }
-                throw lastError;
-            };
+                await sendFn();
+                return true;
+            } catch (error) {
+                lastError = error;
+                if (i < MAX_RETRIES - 1) {
+                    console.warn(`Error al enviar, reintentando (${i + 1}/${MAX_RETRIES})...`);
+                    await new Promise(resolve => setTimeout(resolve, RETRY_DELAY * (i + 1)));
+                }
+            }
+        }
+        console.error(`Error al enviar después de ${MAX_RETRIES} intentos:`, lastError);
+        return false;
+    };
 
-            if (audio) {
+
+            // Detectar si es un documento Excel
+            if (response && response.filename && response.content && 
+                response.content_type === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet') {
+                
+                // Convertir el contenido base64 a buffer
+                const documentBuffer = Buffer.from(response.content, 'base64');
+                
+                // Enviar el documento como archivo
+                await sendWithRetry(() => sock.sendMessage(`${number}@s.whatsapp.net`, {
+                    document: documentBuffer,
+                    mimetype: response.content_type,
+                    fileName: response.filename
+                }));
+                
+                console.log(`Documento Excel enviado a ${number}: ${response.filename}`);
+            }
+
+             // Manejar PDF
+             if (response && response.filename && response.content && 
+                response.content_type === 'application/pdf') {
+                
+                // Convertir el contenido base64 a buffer
+                const pdfBuffer = Buffer.from(response.content, 'base64');
+                
+                // Enviar el PDF como archivo
+                await sendWithRetry(() => sock.sendMessage(`${number}@s.whatsapp.net`, {
+                    document: pdfBuffer,
+                    mimetype: 'application/pdf',  // MIME correcto para PDF
+                    fileName: response.filename
+                }));
+                
+                console.log(`PDF enviado a ${number}: ${response.filename}`);
+            }
+
+
+            // Manejar audio
+            else if (audio) {
                 const audioBuffer = Buffer.from(audio, 'base64');
                 await sendWithRetry(() => sock.sendMessage(`${number}@s.whatsapp.net`, {
                     audio: audioBuffer,
@@ -244,25 +331,26 @@ async function setupOutgoingConsumer(channel, sock) {
                     ptt: true
                 }));
                 console.log(`Audio enviado a ${number}`);
-            } else if (response) {
+            } 
+            // Manejar texto simple
+            else if (response && typeof response === 'string') {
                 await sendWithRetry(() => sock.sendMessage(`${number}@s.whatsapp.net`, { 
                     text: response 
                 }));
                 console.log(`Texto enviado a ${number}: ${response}`);
             }
 
-            // Si llegamos aquí, el mensaje se envió correctamente
             channel.ack(msg);
 
         } catch (error) {
             console.error('Error en consumidor de mensajes salientes:', {
                 error: error.message,
                 retryCount,
-                messageId: msg.properties.messageId
+                messageId: msg.properties.messageId,
+                payload: msg.content.toString().substring(0, 100) + '...' // Log parcial del payload para debugging
             });
 
             if (retryCount < MAX_RETRIES) {
-                // Republicar el mensaje con contador de reintentos incrementado
                 setTimeout(async () => {
                     try {
                         await channel.publish('', QUEUES.outgoing, msg.content, {
@@ -271,7 +359,6 @@ async function setupOutgoingConsumer(channel, sock) {
                                 retryCount: retryCount + 1
                             }
                         });
-                        // Confirmar el mensaje original después de republicarlo
                         channel.ack(msg);
                     } catch (pubError) {
                         console.error('Error al republicar mensaje:', pubError);
@@ -280,7 +367,6 @@ async function setupOutgoingConsumer(channel, sock) {
                 }, RETRY_DELAY);
             } else {
                 console.error(`Mensaje descartado después de ${MAX_RETRIES} intentos para ${msg.properties.messageId}`);
-                // Aquí podrías implementar una lógica para mover el mensaje a una cola de mensajes muertos
                 channel.ack(msg);
             }
         }
@@ -290,9 +376,6 @@ async function setupOutgoingConsumer(channel, sock) {
 
     console.log('Consumidor de mensajes salientes configurado exitosamente');
 }
-
-
-
 
 // Consumidor de mensajes de media
 // Consumidor mejorado de mensajes de media con más logs
@@ -398,4 +481,8 @@ async function sendToRabbitMQ(number, content, queueName, isAudio = false) {
 }
 
 // Iniciar la aplicación
-connectToWhatsApp().catch(console.error);
+// Inicio de la aplicación con reintentos
+connectToWhatsApp().catch(error => {
+    console.error('Error inicial:', error);
+    setTimeout(connectToWhatsApp, CONFIG.rabbit.reconnectDelay);
+});

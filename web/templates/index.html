@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sistema de Control de Órdenes de Entrada</title>
+    <link rel="icon" href="{{ url_for('static', filename='logo.jpeg') }}" type="image/jpeg">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css" rel="stylesheet" />
+    <style>
+        body {
+            background-color: #f0f2f5;
+            padding-bottom: 2rem;
+            font-family: 'Arial', sans-serif;
+        }
+
+        .header-container {
+            display: flex;
+            align-items: center;
+            justify-content: start;
+            margin-bottom: 20px;
+            background-color: #0b3d91;
+            padding: 20px;
+            color: #ffffff;
+            border-bottom: 4px solid #020e27;
+        }
+
+        .logo-redondo {
+            width: 120px;
+            height: 120px;
+            border-radius: 50%;
+            object-fit: cover;
+            margin-right: 20px;
+        }
+
+        .main-title {
+            font-weight: 700;
+            margin: 0;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: #ffffff;
+        }
+
+        .filters-container {
+            background-color: #ffffff;
+            padding: 15px 25px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .filter-label {
+            font-weight: 600;
+            color: #0b3d91;
+            margin-right: 10px;
+        }
+
+        .nav-tabs {
+            margin-bottom: 20px;
+            border-bottom: 3px solid #0b3d91;
+        }
+
+        .nav-tabs .nav-link {
+            border: none;
+            color: #0b3d91;
+            font-weight: 600;
+            padding: 15px 20px;
+        }
+
+        .nav-tabs .nav-link.active {
+            color: #ffffff;
+            background-color: #0b3d91;
+            border-radius: 5px 5px 0 0;
+        }
+
+        .tab-content {
+            padding: 20px;
+            background: #ffffff;
+            border-radius: 0 0 8px 8px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+        }
+
+        .location-title {
+            text-align: center;
+            margin-bottom: 20px;
+            color: #0b3d91;
+            font-weight: 700;
+        }
+
+        .table-container {
+            overflow-x: auto;
+            border-radius: 8px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+        }
+
+        .table {
+            margin-bottom: 0;
+        }
+
+        .table thead th {
+            background-color: #0b3d91;
+            color: #ffffff;
+            border-bottom: 2px solid #020e27;
+        }
+
+        .table td, .table th {
+            vertical-align: middle;
+            padding: 15px;
+            color: #2c3e50;
+        }
+
+        .estado-completado {
+            color: green;
+            font-weight: bold;
+        }
+
+        .estado-en-proceso {
+            color: orange;
+            font-weight: bold;
+        }
+
+        .estado-pendiente {
+            color: red;
+            font-weight: bold;
+        }
+
+        .btn-primary {
+            background-color: #0b3d91;
+            border: none;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+            font-weight: 600;
+        }
+
+        .btn-primary:hover {
+            background-color: #020e27;
+        }
+
+        .select2-container .select2-selection--single {
+            height: 38px;
+            padding: 5px;
+            border: 1px solid #0b3d91;
+            border-radius: 5px;
+        }
+
+        .select2-container--default .select2-selection--single .select2-selection__rendered {
+            line-height: 28px;
+            color: #0b3d91;
+        }
+
+        .select2-container--default .select2-selection--single .select2-selection__arrow {
+            height: 28px;
+        }
+    </style>
+</head>
+<body>
+    <div class="header-container">
+        <img src="{{ url_for('static', filename='logo.jpeg') }}" alt="Logo Kinich" class="logo-redondo">
+        <h1 class="main-title">Sistema de Control de Órdenes de Entrada. Kinich Multiservicios</h1>
+    </div>
+    
+    <div class="filters-container">
+        <div class="d-flex align-items-center">
+            <span class="filter-label">Estado:</span>
+            <select class="form-select filter-select" id="estadoFilter">
+                <option value="todos">Todos los estados</option>
+                <option value="liberada">Liberada</option>
+                <option value="proceso">En Proceso</option>
+                <option value="inactiva">Inactiva</option>
+            </select>
+        </div>
+        <div class="d-flex align-items-center">
+            <span class="filter-label">Periodo:</span>
+            <select class="form-select filter-select" id="periodoFilter">
+                <option value="todos">Todas las fechas</option>
+                <option value="day">Hoy</option>
+                <option value="week">Esta semana</option>
+                <option value="month">Este mes</option>
+            </select>
+        </div>
+    </div>
+
+    <ul class="nav nav-tabs" id="locationTabs" role="tablist">
+        <li class="nav-item" role="presentation">
+            <button class="nav-link active" id="puebla-tab" data-bs-toggle="tab" data-bs-target="#puebla" 
+                    type="button" role="tab" aria-controls="puebla" aria-selected="true">Puebla</button>
+        </li>
+        <li class="nav-item" role="presentation">
+            <button class="nav-link" id="villahermosa-tab" data-bs-toggle="tab" data-bs-target="#villahermosa" 
+                    type="button" role="tab" aria-controls="villahermosa" aria-selected="false">Villa Hermosa</button>
+        </li>
+        <li class="nav-item" role="presentation">
+            <button class="nav-link" id="guadalajara-tab" data-bs-toggle="tab" data-bs-target="#guadalajara" 
+                    type="button" role="tab" aria-controls="guadalajara" aria-selected="false">Guadalajara</button>
+        </li>
+    </ul>
+    
+    <div class="tab-content" id="locationTabContent">
+        <div class="tab-pane fade show active" id="puebla" role="tabpanel" aria-labelledby="puebla-tab">
+            <h2 class="location-title">Puebla</h2>
+            <div class="table-container" id="puebla-table"></div>
+        </div>
+        <div class="tab-pane fade" id="villahermosa" role="tabpanel" aria-labelledby="villahermosa-tab">
+            <h2 class="location-title">Villa Hermosa</h2>
+            <div class="table-container" id="villahermosa-table"></div>
+        </div>
+        <div class="tab-pane fade" id="guadalajara" role="tabpanel" aria-labelledby="guadalajara-tab">
+            <h2 class="location-title">Guadalajara</h2>
+            <div class="table-container" id="guadalajara-table"></div>
+        </div>
+    </div>
+    
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js"></script>
+    <script>
+        function loadTable(lugar, containerId) {
+            const lugarFormatted = lugar.replace(' ', '_');
+            const estado = $('#estadoFilter').val();
+            const periodo = $('#periodoFilter').val();
+            
+            fetch(`/tabla/${lugarFormatted}?estado=${estado}&periodo=${periodo}`)
+                .then(response => response.text())
+                .then(html => {
+                    document.getElementById(containerId).innerHTML = html;
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                    document.getElementById(containerId).innerHTML = 'Error al cargar la tabla';
+                });
+        }
+
+        $(document).ready(function() {
+            $('.filter-select').select2({
+                minimumResultsForSearch: -1,
+                dropdownCssClass: 'select2-dropdown-clean'
+            });
+
+            loadTable('PUEBLA', 'puebla-table');
+
+            $('#estadoFilter, #periodoFilter').change(function() {
+                const activeTab = document.querySelector('.tab-pane.active');
+                const lugar = activeTab.id.toUpperCase();
+                const containerId = `${activeTab.id}-table`;
+                loadTable(lugar, containerId);
+            });
+
+            $('button[data-bs-toggle="tab"]').on('shown.bs.tab', function (e) {
+                const lugar = e.target.id.replace('-tab', '').toUpperCase();
+                const containerId = `${e.target.id.replace('-tab', '')}-table`;
+                loadTable(lugar, containerId);
+            });
+        });
+    </script>
+</body>
+</html>

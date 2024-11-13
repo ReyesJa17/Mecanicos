@@ -1,5 +1,33 @@
+# Ignore the entire mecanicos/ directory
 mecanicos/
+
+# Ignore all node_modules (typically contains dependencies that can be restored)
+node_modules/
+
+# Ignore environment variables and sensitive information
 src/.env
+
+# Ignore Python cache directories
 src/__pycache__/
-src\auth_info_baileys
-node_modules
+# Ignore Python cache directories
+web/__pycache__/
+# Ignore compiled Python files
+*.pyc
+
+
+# Ignore npm lock files (optional, if you want to ignore package-lock.json)
+package-lock.json
+
+# Ignore editor-specific files (optional, if you use VSCode or similar)
+.vscode/
+
+# Ignore logs and temporary files
+*.log
+*.tmp
+
+# Ignore OS-specific files
+.DS_Store
+Thumbs.db
+
+
+.gitignore
